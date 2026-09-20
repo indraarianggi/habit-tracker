@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PROTOTYPE · Activity Grid look</title>
+<!--
+  PROTOTYPE, throwaway. Wipe me after the ticket "Activity Grid look" is resolved.
+
+  Question: what should the Activity Grid look like and how should it behave in a
+  mobile-width layout (max ~430px on every device)?
+
+  Plan: three structurally different variants on one page, switchable via ?variant=A|B|C
+  (or the bottom bar / ← → keys). No app exists yet and the stack is undecided, so this is
+  sub-shape B as a single HTML file: plain CSS + JS, no build, fake data, nothing persisted.
+  Knobs (shading scale, week start, theme, single-habit colour, tooltip detail, range) are
+  in the "Prototype knobs" drawer and mirrored into the URL so a view can be shared.
+
+    A  Scrolling year   GitHub-faithful: weeks as columns, fixed cells, scroll sideways
+    B  Fit to screen    cell size derived from width; 3 / 6 / 12 month range; floating tooltip
+    C  Weeks as rows    transposed: weekdays across, weeks down, 40px tappable cells
+
+  Open directly (file://) or:  python3 -m http.server -d <this folder>
+-->
+<style>
+:root{
+  color-scheme:light;
+  --outer:oklch(0.925 0.005 250);
+  --bg:oklch(0.968 0.004 250);
+  --surface:oklch(1 0 0);
+  --tile:oklch(0.968 0.004 250);
+  --ink:oklch(0.22 0.01 250);
+  --muted:oklch(0.5 0.01 250);
+  --line:oklch(0 0 0 / 0.08);
+  --shadow-border:0 0 0 1px oklch(0 0 0 / .06),0 1px 2px -1px oklch(0 0 0 / .06),0 2px 4px 0 oklch(0 0 0 / .04);
+  --l0:oklch(0.94 0.004 250);
+  --L1:.89;--C1:.07; --L2:.80;--C2:.12; --L3:.66;--C3:.16; --L4:.50;--C4:.15;
+  --on0:oklch(0.55 0.01 250);--on1:oklch(0.4 0.03 250);--on2:oklch(0.25 0.03 250);--on3:oklch(0.18 0.02 250);--on4:#fff;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --outer:oklch(0.13 0.005 250);--bg:oklch(0.19 0.006 250);--surface:oklch(0.235 0.008 250);--tile:oklch(0.19 0.006 250);
+    --ink:oklch(0.96 0.005 250);--muted:oklch(0.72 0.01 250);--line:oklch(1 0 0 / 0.1);
+    --shadow-border:0 0 0 1px oklch(1 0 0 / .08);
+    --l0:oklch(0.29 0.008 250);
+    --L1:.38;--C1:.06; --L2:.50;--C2:.10; --L3:.63;--C3:.14; --L4:.79;--C4:.16;
+    --on0:oklch(0.6 0.01 250);--on1:oklch(0.85 0.02 250);--on2:#fff;--on3:oklch(0.18 0.02 250);--on4:oklch(0.15 0.02 250);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --outer:oklch(0.13 0.005 250);--bg:oklch(0.19 0.006 250);--surface:oklch(0.235 0.008 250);--tile:oklch(0.19 0.006 250);
+  --ink:oklch(0.96 0.005 250);--muted:oklch(0.72 0.01 250);--line:oklch(1 0 0 / 0.1);
+  --shadow-border:0 0 0 1px oklch(1 0 0 / .08);
+  --l0:oklch(0.29 0.008 250);
+  --L1:.38;--C1:.06; --L2:.50;--C2:.10; --L3:.63;--C3:.14; --L4:.79;--C4:.16;
+  --on0:oklch(0.6 0.01 250);--on1:oklch(0.85 0.02 250);--on2:#fff;--on3:oklch(0.18 0.02 250);--on4:oklch(0.15 0.02 250);
+}
+
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--outer);color:var(--ink);font:14px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.tnum{font-variant-numeric:tabular-nums}
+h1{font-size:22px;line-height:1.2;margin:0;font-weight:650;text-wrap:balance}
+p{text-wrap:pretty}
+
+/* the "max width on desktop" decision: one mobile-width column, centred */
+.shell{max-width:430px;margin:0 auto;min-height:100dvh;background:var(--bg);padding-bottom:104px;box-shadow:0 0 0 1px var(--line)}
+.top{padding:20px 16px 8px}
+.top .sub{margin:4px 0 0;color:var(--muted);font-size:12px}
+
+/* knobs */
+.knobs{margin:8px 16px 0;border-radius:16px;background:var(--surface);box-shadow:var(--shadow-border)}
+.knobs summary{list-style:none;cursor:pointer;padding:12px 14px;font-size:13px;color:var(--muted);display:flex;justify-content:space-between}
+.knobs summary::-webkit-details-marker{display:none}
+.knobs summary::after{content:"+";}
+.knobs[open] summary::after{content:"–"}
+.knob-grid{padding:0 14px 12px;display:grid;gap:10px}
+.knob{display:grid;grid-template-columns:110px 1fr;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+
+/* segmented control: outer radius = inner radius + padding (8 + 2) */
+.seg{display:inline-flex;padding:2px;border-radius:10px;background:var(--tile);box-shadow:inset 0 0 0 1px var(--line)}
+.seg button{position:relative;height:30px;padding:0 12px;border-radius:8px;font-size:13px;color:var(--muted);
+  transition-property:background-color,color,scale;transition-duration:150ms;transition-timing-function:ease-out}
+.seg button::after{content:"";position:absolute;inset:-7px 0}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-border)}
+.seg button:active{scale:.96}
+
+/* habit filter chips */
+.chips{display:flex;gap:8px;overflow-x:auto;padding:12px 16px 10px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{position:relative;flex:none;display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 13px 0 11px;border-radius:999px;background:var(--surface);box-shadow:var(--shadow-border);font-size:13px;
+  transition-property:background-color,color,scale;transition-duration:150ms;transition-timing-function:ease-out}
+.chip::after{content:"";position:absolute;inset:-5px 0}
+.chip:active{scale:.96}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--surface)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:oklch(.66 .16 var(--h,150));flex:none}
+
+#view{padding:0 16px;--hue:150;
+  --c1:oklch(var(--L1) var(--C1) var(--hue));--c2:oklch(var(--L2) var(--C2) var(--hue));
+  --c3:oklch(var(--L3) var(--C3) var(--hue));--c4:oklch(var(--L4) var(--C4) var(--hue))}
+.card{background:var(--surface);border-radius:20px;padding:14px;box-shadow:var(--shadow-border)}
+.summary{font-size:13px;color:var(--muted);margin-bottom:12px}
+.summary b{color:var(--ink);font-weight:600}
+.hint{margin:0;padding:8px;color:var(--muted);font-size:13px}
+
+/* level colours, shared by every variant */
+.l0{background:var(--l0);color:var(--on0)}
+.l1{background:var(--c1);color:var(--on1)}
+.l2{background:var(--c2);color:var(--on2)}
+.l3{background:var(--c3);color:var(--on3)}
+.l4{background:var(--c4);color:var(--on4)}
+
+/* A + B: column-major grid of small cells */
+.scroller{overflow-x:auto;scrollbar-width:thin;margin:0 -14px;padding:0 14px 6px}
+.ga{--r:3px;display:grid;grid-template-columns:28px auto;grid-template-rows:16px auto;width:max-content}
+.ga-months{grid-column:2;position:relative;height:16px;font-size:10px;line-height:1;color:var(--muted)}
+.ga-months span{position:absolute;top:0;white-space:nowrap}
+.ga-wd{position:sticky;left:0;z-index:2;background:var(--surface);display:grid;grid-template-rows:repeat(7,var(--size));gap:var(--gap);font-size:10px;line-height:1;color:var(--muted)}
+.ga-wd span{display:flex;align-items:center;white-space:nowrap}
+.grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,var(--size));grid-auto-columns:var(--size);gap:var(--gap);cursor:pointer;touch-action:pan-x pan-y}
+.c{display:grid;place-items:center;border-radius:var(--r);font-style:normal;font-size:10px;line-height:1;position:relative}
+.c.void{background:transparent}
+.c.future{background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
+.c.sel{z-index:1;box-shadow:0 0 0 1.5px var(--surface),0 0 0 3px var(--ink)}
+
+.legend{display:flex;align-items:center;gap:4px;justify-content:flex-end;margin-top:10px;font-size:11px;color:var(--muted)}
+.legend .c{width:12px;height:12px}
+.legend span:first-child{margin-right:2px}.legend span:last-child{margin-left:2px}
+.th{text-align:right;font-size:11px;color:var(--muted);margin-top:4px}
+
+/* detail panel: outer 20 = inner 12 + padding 8 */
+.detail{background:var(--surface);border-radius:20px;padding:8px;box-shadow:var(--shadow-border)}
+.panel{margin-top:12px}
+.d-date{padding:8px 8px 10px;font-weight:600}
+.d-tile,.d-list{background:var(--tile);border-radius:12px;padding:12px}
+.d-tile{display:flex;align-items:baseline;justify-content:space-between}
+.d-tile .big{font-size:22px;font-weight:650}
+.muted{color:var(--muted)}
+.d-list{margin:8px 0 0;list-style:none;display:grid;gap:10px}
+.d-list li{display:grid;grid-template-columns:8px 78px 1fr 52px 28px;align-items:center;gap:8px;font-size:13px}
+.d-list .bar{height:6px;border-radius:3px;background:var(--line)}
+.d-list .bar i{display:block;height:100%;border-radius:3px;background:oklch(.66 .16 var(--h,150))}
+.d-list .mm{text-align:right}.d-list .nn{color:var(--muted);text-align:right}
+
+/* B: floating popover */
+.pop{position:fixed;z-index:40;pointer-events:none;max-width:230px;padding:8px 10px;border-radius:12px;background:var(--ink);color:var(--surface);font-size:12px;box-shadow:0 8px 24px oklch(0 0 0 / .25)}
+.pop[hidden]{display:none}
+.pop .p-date{opacity:.7;margin-bottom:2px}
+.pop .p-main b{font-weight:650}
+.pop .p-row{display:flex;align-items:center;gap:6px;margin-top:4px}
+.pop .p-row span:last-child{margin-left:auto;padding-left:12px}
+.bhead{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+
+/* C: weeks as rows */
+.c-head,.c-row{display:grid;grid-template-columns:32px 1fr 52px;gap:6px;align-items:center}
+.c-head{position:sticky;top:0;z-index:3;background:var(--surface);padding:6px 0 8px;font-size:11px;color:var(--muted);text-align:center}
+.c-head .c-days,.c-days{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.c-row{margin-bottom:4px}
+.mo{display:flex;flex-direction:column;font-size:11px;line-height:1.15;color:var(--muted)}
+.mo small{font-size:10px;opacity:.8}
+.wk{font-size:11px;color:var(--muted);text-align:right;white-space:nowrap}
+.cd{position:relative;aspect-ratio:1;border-radius:10px;display:grid;place-items:center;font-size:12px;
+  transition-property:scale;transition-duration:120ms;transition-timing-function:ease-out}
+button.cd:active{scale:.96}
+.cd.first{font-weight:700;text-decoration:underline;text-underline-offset:2px}
+.cd.future{background:transparent;color:var(--muted);opacity:.5;box-shadow:inset 0 0 0 1px var(--line)}
+.cd.today{box-shadow:inset 0 0 0 1.5px var(--ink)}
+.cd.sel{z-index:1;box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--ink)}
+.cd.today.sel{box-shadow:inset 0 0 0 1.5px var(--ink),0 0 0 2px var(--surface),0 0 0 4px var(--ink)}
+.c-legend{margin-bottom:10px}
+.c-legend .legend{margin-top:0;justify-content:flex-start}
+.c-legend .th{text-align:left}
+.c-detail{margin:2px 0 10px}
+.c-detail .detail{background:var(--bg);box-shadow:none}
+.c-detail .d-tile,.c-detail .d-list{background:var(--surface)}
+.c-detail .d-list li{grid-template-columns:8px 70px 1fr 48px 26px}
+
+/* variant switcher bar (prototype chrome, not part of the design) */
+.switcher{position:fixed;left:50%;bottom:max(16px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:50;display:flex;align-items:center;gap:2px;padding:4px;border-radius:999px;background:var(--ink);color:var(--surface);box-shadow:0 0 0 1px oklch(1 0 0 / .12),0 8px 24px oklch(0 0 0 / .28)}
+.switcher button{width:44px;height:44px;border-radius:999px;display:grid;place-items:center;transition-property:scale,background-color;transition-duration:120ms;transition-timing-function:ease-out}
+.switcher button:active{scale:.96;background:oklch(0.5 0 0 / .25)}
+.switcher svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.switcher .lbl{min-width:168px;text-align:center;font-size:13px;white-space:nowrap}
+.switcher .lbl b{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:6px;background:var(--surface);color:var(--ink);margin-right:6px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <h1>Activity</h1>
+    <p class="sub">PROTOTYPE · fake data · Activity Grid look</p>
+  </header>
+  <details class="knobs" id="knobs">
+    <summary>Prototype knobs</summary>
+    <div class="knob-grid" id="knobGrid"></div>
+  </details>
+  <div class="chips" id="chips"></div>
+  <main id="view"></main>
+</div>
+<div class="pop" id="pop" hidden></div>
+<nav class="switcher" id="switcher" aria-label="Prototype variants">
+  <button id="prev" aria-label="Previous variant"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+  <span class="lbl" id="lbl"></span>
+  <button id="next" aria-label="Next variant"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+</nav>
+
+<script>
+/* ---------- fake data ---------- */
+const HABITS=[
+  {id:'read',  name:'Reading', hue:250,p:.55,dur:[15,20,30,30,45]},
+  {id:'code',  name:'Coding',  hue:305,p:.50,dur:[25,25,25,50,50,75]},
+  {id:'gym',   name:'Workout', hue:45, p:.38,dur:[30,45,45,60]},
+  {id:'guitar',name:'Guitar',  hue:15, p:.30,dur:[10,15,20,25]},
+];
+const NAMES={A:'Scrolling year',B:'Fit to screen',C:'Weeks as rows'};
+const $=s=>document.querySelector(s);
+const pad=n=>String(n).padStart(2,'0');
+const keyOf=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+const parseKey=k=>{const [y,m,d]=k.split('-').map(Number);return new Date(y,m-1,d)};
+const addDays=(d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
+const TODAY=(()=>{const n=new Date();return new Date(n.getFullYear(),n.getMonth(),n.getDate())})();
+const TODAY_KEY=keyOf(TODAY);
+const fmt=m=>m<60?m+'m':Math.floor(m/60)+'h'+(m%60?' '+(m%60)+'m':'');
+const fmtDate=d=>d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const DATA=new Map(); // 'YYYY-MM-DD' -> [{h,m}] one entry per Check-in
+(function gen(){
+  const r=rng(20260919);
+  for(let i=419;i>=0;i--){
+    const d=addDays(TODAY,-i),dow=d.getDay(),we=dow===0||dow===6;
+    if((i>=150&&i<=163)||(i>=41&&i<=45)) continue;              // two quiet stretches
+    const wave=0.8+0.45*Math.sin(i/21)+0.15*Math.sin(i/6);
+    const list=[];
+    for(const h of HABITS){
+      const p=h.p*wave*(h.id==='gym'&&we?1.5:1)*(h.id==='code'&&we?.5:1);
+      if(r()<Math.min(.9,p)){
+        const n=1+(r()<.35)+(r()<.12);
+        for(let k=0;k<n;k++) list.push({h:h.id,m:h.dur[Math.floor(r()*h.dur.length)]});
+      }
+    }
+    if(r()<.03) list.push({h:'code',m:90+Math.floor(r()*30)});  // rare marathon day
+    if(list.length) DATA.set(keyOf(d),list);
+  }
+})();
+
+/* ---------- state (mirrored into the URL) ---------- */
+const P=new URLSearchParams(location.search);
+const S={
+  variant:['A','B','C'].includes((P.get('variant')||'').toUpperCase())?P.get('variant').toUpperCase():'A',
+  scale:P.get('scale')||'fixed', ws:P.get('ws')||'1', theme:P.get('theme')||'auto',
+  fcolor:P.get('fcolor')||'habit', tip:P.get('tip')||'breakdown', arange:P.get('arange')||'rolling',
+  habit:P.get('habit')||'all', range:Number(P.get('range')||6), sel:TODAY_KEY,
+  _cells:[], _todayCol:0, _fresh:true,
+};
+let HOVER=null;
+const KNOBS=[
+  {key:'scale', label:'Shading',            opts:[['fixed','Fixed'],['relative','Relative']]},
+  {key:'ws',    label:'Week starts',        opts:[['1','Mon'],['0','Sun']]},
+  {key:'theme', label:'Theme',              opts:[['auto','Auto'],['light','Light'],['dark','Dark']]},
+  {key:'fcolor',label:'Single-habit colour',opts:[['habit','Habit hue'],['same','Same green']]},
+  {key:'tip',   label:'Tooltip (A, B)',     opts:[['basic','Basic'],['breakdown','+ Habits']]},
+  {key:'arange',label:'Range (A)',          opts:[['rolling','Rolling year'],['calendar','Calendar year']]},
+];
+
+/* ---------- domain helpers ---------- */
+const alignStart=d=>addDays(d,-((d.getDay()-Number(S.ws)+7)%7));
+function buildWeeks(start,end){const w=[];for(let d=start;d<=end;d=addDays(d,7)){w.push([0,1,2,3,4,5,6].map(i=>addDays(d,i)))}return w}
+function info(key){
+  const all=DATA.get(key)||[];
+  const es=S.habit==='all'?all:all.filter(e=>e.h===S.habit);
+  const by={};let total=0;
+  for(const e of es){total+=e.m;(by[e.h]??={m:0,n:0});by[e.h].m+=e.m;by[e.h].n++}
+  return {total,count:es.length,by};
+}
+function scaleInfo(){
+  let th;
+  if(S.scale==='fixed') th=[29,59,119];
+  else{
+    const v=[...DATA.keys()].map(k=>info(k).total).filter(x=>x>0).sort((a,b)=>a-b);
+    const q=p=>v.length?v[Math.min(v.length-1,Math.floor(p*v.length))]:0;
+    th=[q(.25),q(.5),q(.75)];
+  }
+  return {th,lvl:t=>t<=0?0:t<=th[0]?1:t<=th[1]?2:t<=th[2]?3:4};
+}
+const hue=()=>S.habit==='all'||S.fcolor==='same'?150:HABITS.find(h=>h.id===S.habit).hue;
+
+/* ---------- shared markup ---------- */
+function legend(sc){
+  const [a,b,c]=sc.th;
+  const rg=(lo,hi)=>hi>=lo?(lo===hi?lo:lo+'–'+hi):'–';
+  return `<div class="legend"><span>Less</span>${[0,1,2,3,4].map(l=>`<i class="c l${l}"></i>`).join('')}<span>More</span></div>
+  <div class="th tnum">min/day: 0 · ${rg(1,a)} · ${rg(a+1,b)} · ${rg(b+1,c)} · ${c+1}+</div>`;
+}
+const summary=(st,label)=>`<div class="summary"><b class="tnum">${st.count}</b> check-ins · <b class="tnum">${fmt(st.min)}</b> ${label}</div>`;
+function wdLabels(){
+  const N=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];let h='';
+  for(let r=0;r<7;r++){const dow=(Number(S.ws)+r)%7;h+=`<span>${[1,3,5].includes(dow)?N[dow]:''}</span>`}
+  return h;
+}
+function monthLabels(weeks,pitch){
+  let out='',last=-99;
+  weeks.forEach((w,i)=>{
+    const f=w.find(d=>d.getDate()===1);
+    if(f&&(i-last)*pitch>=28){out+=`<span style="left:${i*pitch}px">${f.toLocaleDateString('en-GB',{month:'short'})}</span>`;last=i}
+  });
+  return out;
+}
+function makeGrid(weeks,{min=null,maxEnd,statsFrom=null,showNum=false}){
+  const sc=scaleInfo(),cells=[],st={count:0,min:0};let html='';
+  for(const w of weeks)for(const d of w){
+    const outside=(min&&d<min)||d>maxEnd;
+    if(outside){cells.push(null);html+='<i class="c void"></i>';continue}
+    if(d>TODAY){cells.push(null);html+='<i class="c future"></i>';continue}
+    const k=keyOf(d),i=info(k);
+    if(!statsFrom||d>=statsFrom){st.count+=i.count;st.min+=i.total}
+    cells.push(k);
+    html+=`<i class="c l${sc.lvl(i.total)}${k===S.sel?' sel':''}">${showNum?d.getDate():''}</i>`;
+  }
+  return {html,cells,stats:st,sc};
+}
+function detailHTML(k){
+  if(!k) return `<div class="detail"><p class="hint">Tap a day to see its Check-ins.</p></div>`;
+  const i=info(k),d=parseKey(k);
+  const rows=HABITS.filter(h=>i.by[h.id]).map(h=>{const b=i.by[h.id];
+    return `<li><span class="dot" style="--h:${h.hue}"></span><span>${h.name}</span><span class="bar"><i style="--h:${h.hue};width:${Math.round(b.m/i.total*100)}%"></i></span><span class="mm tnum">${fmt(b.m)}</span><span class="nn tnum">×${b.n}</span></li>`}).join('');
+  return `<div class="detail"><div class="d-date">${fmtDate(d)}${k===TODAY_KEY?' · Today':''}</div>
+    <div class="d-tile"><span class="big tnum">${i.total?fmt(i.total):'No check-ins'}</span>${i.total?`<span class="muted tnum">${plural(i.count,'check-in')}</span>`:''}</div>
+    ${rows?`<ul class="d-list">${rows}</ul>`:''}</div>`;
+}
+function gridBlock(g,weeks,size,gap,r){
+  const pitch=size+gap;
+  return `<div class="ga" style="--size:${size}px;--gap:${gap}px;--r:${r}px">
+    <div class="ga-months" style="width:${weeks.length*pitch}px">${monthLabels(weeks,pitch)}</div>
+    <div class="ga-wd">${wdLabels()}</div>
+    <div class="grid" data-size="${size}" data-gap="${gap}" data-n="${weeks.length}">${g.html}</div>
+  </div>`;
+}
+
+/* ---------- variant A: scrolling year ---------- */
+function renderA(){
+  const rolling=S.arange==='rolling';
+  const size=12,gap=3;
+  let start,min=null,maxEnd,label,statsFrom;
+  if(rolling){start=addDays(alignStart(TODAY),-52*7);maxEnd=TODAY;label='in the last 12 months';statsFrom=addDays(TODAY,-364)}
+  else{const y=TODAY.getFullYear();min=new Date(y,0,1);start=alignStart(min);maxEnd=new Date(y,11,31);label='in '+y}
+  const weeks=buildWeeks(start,maxEnd);
+  const g=makeGrid(weeks,{min,maxEnd,statsFrom});
+  S._cells=g.cells;S._todayCol=weeks.findIndex(w=>w.some(d=>keyOf(d)===TODAY_KEY));S._pitch=size+gap;
+  return `<section class="card">${summary(g.stats,label)}
+    <div class="scroller" id="scroller">${gridBlock(g,weeks,size,gap,3)}</div>
+    ${legend(g.sc)}</section>
+    <section class="panel">${detailHTML(S.sel)}</section>`;
+}
+
+/* ---------- variant B: fit to screen ---------- */
+function renderB(){
+  const m=S.range;
+  const start=new Date(TODAY.getFullYear(),TODAY.getMonth()-m,TODAY.getDate()+1);
+  const weeks=buildWeeks(alignStart(start),TODAY);
+  const n=weeks.length;
+  const avail=$('#view').clientWidth-32-28-28;
+  let gap=3,size=Math.floor((avail-(n-1)*gap)/n);
+  if(size<10){gap=2;size=Math.floor((avail-(n-1)*gap)/n)}
+  if(size<6){gap=1;size=Math.floor((avail-(n-1)*gap)/n)}
+  size=Math.min(size,30);
+  const r=Math.max(2,Math.round(size*.22));
+  const g=makeGrid(weeks,{maxEnd:TODAY,statsFrom:start,showNum:size>=22});
+  S._cells=g.cells;S._pitch=size+gap;
+  const seg=[3,6,12].map(v=>`<button data-range="${v}" aria-pressed="${v===m}">${v}m</button>`).join('');
+  return `<section class="card">
+    <div class="bhead">${summary(g.stats,'in the last '+m+' months')}<div class="seg">${seg}</div></div>
+    ${gridBlock(g,weeks,size,gap,r)}
+    ${legend(g.sc)}</section>
+    <p class="hint">Cells are ${size}px (gap ${gap}px). ${S.sel?'Tap the selected day again to dismiss the tooltip.':'Hover or tap a day.'}</p>`;
+}
+
+/* ---------- variant C: weeks as rows ---------- */
+function renderC(){
+  const weeks=buildWeeks(addDays(alignStart(TODAY),-52*7),TODAY).reverse();
+  const sc=scaleInfo(),from=addDays(TODAY,-364),st={count:0,min:0};
+  const N=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const head=`<div class="c-head"><span></span><div class="c-days">${[0,1,2,3,4,5,6].map(r=>`<span>${N[(Number(S.ws)+r)%7]}</span>`).join('')}</div><span>Week</span></div>`;
+  let rows='';
+  for(const w of weeks){
+    let wt=0,cells='';
+    for(const d of w){
+      const k=keyOf(d);
+      if(d>TODAY){cells+=`<span class="cd future">${d.getDate()}</span>`;continue}
+      const i=info(k);wt+=i.total;
+      if(d>=from){st.count+=i.count;st.min+=i.total}
+      cells+=`<button class="cd l${sc.lvl(i.total)}${k===TODAY_KEY?' today':''}${k===S.sel?' sel':''}${d.getDate()===1?' first':''}" data-day="${k}" aria-label="${fmtDate(d)}: ${i.total} minutes">${d.getDate()}</button>`;
+    }
+    const f=w.find(d=>d.getDate()===1);
+    const mo=f?`<span class="mo">${f.toLocaleDateString('en-GB',{month:'short'})}${f.getMonth()===0?`<small>${f.getFullYear()}</small>`:''}</span>`:'<span></span>';
+    rows+=`<div class="c-row">${mo}<div class="c-days">${cells}</div><span class="wk tnum">${wt?fmt(wt):''}</span></div>`;
+    if(S.sel&&w.some(d=>keyOf(d)===S.sel)) rows+=`<div class="c-detail">${detailHTML(S.sel)}</div>`;
+  }
+  S._cells=[];
+  return `<section class="card">${summary(st,'in the last 12 months')}
+    <div class="c-legend">${legend(sc)}</div>${head}${rows}</section>`;
+}
+
+/* ---------- popover (A hover, B hover + tap) ---------- */
+function popHTML(k){
+  const i=info(k),d=parseKey(k);
+  const main=i.total?`<div class="p-main"><b class="tnum">${fmt(i.total)}</b> · ${plural(i.count,'check-in')}</div>`:`<div class="p-main">No check-ins</div>`;
+  const rows=S.tip==='breakdown'&&i.total?HABITS.filter(h=>i.by[h.id]).map(h=>`<div class="p-row"><span class="dot" style="--h:${h.hue}"></span><span>${h.name}</span><span class="tnum">${fmt(i.by[h.id].m)}</span></div>`).join(''):'';
+  return `<div class="p-date">${fmtDate(d)}</div>${main}${rows}`;
+}
+function updatePop(){
+  const pop=$('#pop'),k=S.variant==='C'?null:(HOVER??(S.variant==='B'?S.sel:null));
+  const grid=$('.grid'),idx=k?S._cells.indexOf(k):-1,el=grid&&idx>=0?grid.children[idx]:null;
+  if(!el){pop.hidden=true;return}
+  pop.innerHTML=popHTML(k);pop.hidden=false;
+  const r=el.getBoundingClientRect(),w=pop.offsetWidth,h=pop.offsetHeight;
+  let left=Math.max(8,Math.min(innerWidth-w-8,r.left+r.width/2-w/2));
+  let top=r.top-h-8;if(top<8)top=r.bottom+8;
+  pop.style.left=left+'px';pop.style.top=top+'px';
+}
+function cellAt(g,e){
+  const r=g.getBoundingClientRect(),p=+g.dataset.size+ +g.dataset.gap;
+  const col=Math.floor((e.clientX-r.left)/p),row=Math.floor((e.clientY-r.top)/p);
+  if(col<0||row<0||row>6||col>=+g.dataset.n)return null;
+  return S._cells[col*7+row]??null;
+}
+
+/* ---------- render ---------- */
+function syncControls(){
+  document.querySelectorAll('[data-knob]').forEach(g=>g.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(String(S[g.dataset.knob])===b.dataset.v))));
+  document.querySelectorAll('.chip').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.habit===S.habit)));
+  $('#lbl').innerHTML=`<b>${S.variant}</b>${NAMES[S.variant]}`;
+  document.documentElement.dataset.theme=S.theme;
+}
+function syncURL(){
+  const p=new URLSearchParams({variant:S.variant,scale:S.scale,ws:S.ws,theme:S.theme,fcolor:S.fcolor,tip:S.tip,arange:S.arange,habit:S.habit,range:S.range});
+  try{history.replaceState(null,'','?'+p)}catch(e){}
+}
+function render(anchor){
+  const view=$('#view'),prev=$('#scroller'),keep=prev&&!S._fresh?prev.scrollLeft:null;
+  syncControls();
+  view.style.setProperty('--hue',hue());
+  view.innerHTML={A:renderA,B:renderB,C:renderC}[S.variant]();
+  const sc=$('#scroller');
+  if(sc){
+    if(keep!=null)sc.scrollLeft=keep;
+    else if(S.variant==='A'&&S.arange==='calendar')sc.scrollLeft=Math.max(0,28+S._todayCol*S._pitch-sc.clientWidth/2);
+    else sc.scrollLeft=sc.scrollWidth;
+  }
+  if(anchor&&S.variant==='C'){const el=document.querySelector(`[data-day="${anchor.k}"]`);if(el)scrollBy(0,el.getBoundingClientRect().top-anchor.top)}
+  S._fresh=false;syncURL();updatePop();
+}
+
+/* ---------- wiring ---------- */
+$('#knobGrid').innerHTML=KNOBS.map(k=>`<div class="knob"><span>${k.label}</span><div class="seg" data-knob="${k.key}">${k.opts.map(o=>`<button data-v="${o[0]}">${o[1]}</button>`).join('')}</div></div>`).join('');
+$('#chips').innerHTML=[{id:'all',name:'All',hue:150},...HABITS].map(h=>`<button class="chip" data-habit="${h.id}"><span class="dot" style="--h:${h.hue}"></span>${h.name}</button>`).join('');
+$('#knobGrid').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  const key=b.closest('[data-knob]').dataset.knob;S[key]=b.dataset.v;
+  if(key==='ws'||key==='arange')S._fresh=true;
+  render();
+});
+$('#chips').addEventListener('click',e=>{const b=e.target.closest('.chip');if(!b)return;S.habit=b.dataset.habit;render()});
+$('#view').addEventListener('click',e=>{
+  const sg=e.target.closest('[data-range]');
+  if(sg){S.range=Number(sg.dataset.range);S._fresh=true;render();return}
+  const btn=e.target.closest('[data-day]');let k=null,anchor=null;
+  if(btn){k=btn.dataset.day;anchor={k,top:btn.getBoundingClientRect().top}}
+  else{const g=e.target.closest('.grid');if(!g)return;k=cellAt(g,e)}
+  if(!k)return;
+  S.sel=S.sel===k?null:k;render(anchor);
+});
+$('#view').addEventListener('pointermove',e=>{
+  if(e.pointerType!=='mouse')return;
+  const g=e.target.closest('.grid'),k=g?cellAt(g,e):null;
+  if(k!==HOVER){HOVER=k;updatePop()}
+});
+$('#view').addEventListener('pointerleave',()=>{HOVER=null;updatePop()});
+function setVariant(v){S.variant=v;S._fresh=true;HOVER=null;render();scrollTo(0,0)}
+const order=['A','B','C'];
+const step=d=>setVariant(order[(order.indexOf(S.variant)+d+3)%3]);
+$('#prev').addEventListener('click',()=>step(-1));
+$('#next').addEventListener('click',()=>step(1));
+addEventListener('keydown',e=>{
+  if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;
+  if(e.target.closest&&e.target.closest('input,textarea,select,[contenteditable]'))return;
+  step(e.key==='ArrowLeft'?-1:1);
+});
+addEventListener('scroll',updatePop,{passive:true});
+let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{if(S.variant==='B')render();else updatePop()},100)});
+
+render();
+</script>
+</body>
+</html>
