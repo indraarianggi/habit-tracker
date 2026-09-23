@@ -2,6 +2,8 @@
 
 Ticket 01 publishes `/privacy`; ticket 02 adds Google sign-in and a private Today screen styled after the accepted Timer empty state in `habit-tracker.pen`. Task entry is labeled as unavailable and future navigation labels are noninteractive; task creation, focus sessions, sync, offline caching, and account deletion belong to later tickets. The single TypeScript package uses React and TanStack Start in SPA mode; its production output includes a Node server.
 
+UI styling uses Tailwind CSS v4 design tokens in `src/styles.css` and locally owned shadcn/ui primitives in `src/components/ui/`, customized to match `habit-tracker.pen`. Import application code through `@/` (mapped to `src/` in TypeScript and Vite). Playwright tests live alongside their routes/server code in `__tests__/*.test.ts`; route generation ignores those folders.
+
 ## Run
 
 Requires Node 22.12+ and pnpm 11.20.0 (pinned in `package.json`). Run `pnpm install --frozen-lockfile`, copy `.env.example` to `.env.local`, and set `VITE_PRIVACY_CONTACT_EMAIL` to a real monitored mailbox. This address appears publicly on `/privacy`; it is bundled at build time. Set the Google and server credentials below before using the app. `.env.local` is read by the development, build and start scripts; existing process environment variables take precedence. Local `.env*` files other than `.env.example` are ignored.
@@ -14,7 +16,7 @@ Requires Node 22.12+ and pnpm 11.20.0 (pinned in `package.json`). Run `pnpm inst
 - `pnpm run smoke:browser` — launch the development server and exercise public privacy, Google authorization start, unsigned protection and signed-in per-User Today on a mobile browser
 - `SMOKE_SERVER=production pnpm run smoke:browser` — exercise the same paths against a previously built server
 
-The smoke runner owns port 3000 and supplies **test-only** OAuth configuration and isolated SQLite data; it does not contact Google or create a public test login. It seeds Better Auth sessions outside the production app to test the private routes. Stop another local server on that port first. For public deployment provide the contact at build time and all server variables at runtime; keep the SQLite file and its WAL files on persistent storage. Runtime changes to `VITE_` values do not alter built assets.
+The smoke runner owns port 3000 and supplies **test-only** OAuth configuration, a test-only privacy contact, and isolated SQLite data; it does not contact Google or create a public test login. It seeds Better Auth sessions outside the production app to test the private routes. Stop another local server on that port first. For public deployment provide the contact at build time and all server variables at runtime; keep the SQLite file and its WAL files on persistent storage. Runtime changes to `VITE_` values do not alter built assets.
 
 ## Google sign-in configuration
 

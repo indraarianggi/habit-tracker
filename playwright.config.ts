@@ -7,11 +7,13 @@ const authTestEnv = {
   GOOGLE_CLIENT_ID: 'browser-smoke-client',
   GOOGLE_CLIENT_SECRET: 'browser-smoke-secret',
   DATABASE_PATH: '.data/browser-smoke.sqlite',
+  VITE_PRIVACY_CONTACT_EMAIL: 'privacy-smoke@invalid.test',
 }
 Object.assign(process.env, authTestEnv)
 
 export default defineConfig({
-  testDir: './tests',
+  testDir: './src',
+  testMatch: '**/__tests__/*.test.ts',
   use: { baseURL, browserName: 'chromium' },
   webServer: {
     command: process.env.SMOKE_SERVER === 'production'

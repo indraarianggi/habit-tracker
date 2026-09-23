@@ -14145,7 +14145,43 @@
     },
     "font-sans": {
       "type": "string",
-      "value": "Plus Jakarta Sans"
+      "value": "IBM Plex Sans"
+    },
+    "bg-paper": {
+      "type": "color",
+      "value": "#FAF8F5"
+    },
+    "ink-primary": {
+      "type": "color",
+      "value": "#1A1918"
+    },
+    "ink-secondary": {
+      "type": "color",
+      "value": "#5C5A55"
+    },
+    "ink-muted": {
+      "type": "color",
+      "value": "#8C8980"
+    },
+    "rule-subtle": {
+      "type": "color",
+      "value": "#E4E0D7"
+    },
+    "rule-bold": {
+      "type": "color",
+      "value": "#1A1918"
+    },
+    "vermilion": {
+      "type": "color",
+      "value": "#D9381E"
+    },
+    "font-display": {
+      "type": "string",
+      "value": "Literata"
+    },
+    "font-mono": {
+      "type": "string",
+      "value": "IBM Plex Mono"
     }
   },
   "fileToken": "7ae46e92-fd7f-4f83-a469-dfdc133e74af"

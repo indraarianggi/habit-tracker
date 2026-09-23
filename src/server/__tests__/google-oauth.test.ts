@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { auth, authOptions } from '../src/server/auth'
+import { auth, authOptions } from '@/server/auth'
 
 const origin = 'http://127.0.0.1:3000'
 

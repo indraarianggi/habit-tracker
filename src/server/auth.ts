@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { betterAuth } from 'better-auth'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
 
-import { migrateAuth } from './auth-schema'
+import { migrateAuth } from '@/server/auth-schema'
 const baseURL = process.env.BETTER_AUTH_URL
 const secret = process.env.BETTER_AUTH_SECRET
 const clientId = process.env.GOOGLE_CLIENT_ID

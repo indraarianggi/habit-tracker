@@ -1,14 +1,14 @@
 import { expect, test } from '@playwright/test'
 import { betterAuth } from 'better-auth'
 import { testUtils } from 'better-auth/plugins'
-import { authOptions } from '../src/server/auth'
+import { authOptions } from '@/server/auth'
 
 const testAuth = betterAuth({ ...authOptions, plugins: [testUtils()] })
 
 test('each session opens only its own private Today on mobile', async ({ browser, request }) => {
   const helpers = (await testAuth.$context).test
-  const alice = helpers.createUser({ name: 'Alice', email: 'alice-smoke@invalid.test' })
-  const bob = helpers.createUser({ name: 'Bob', email: 'bob-smoke@invalid.test' })
+  const alice = helpers.createUser({ name: 'Alice', email: `alice-smoke-${crypto.randomUUID()}@invalid.test` })
+  const bob = helpers.createUser({ name: 'Bob', email: `bob-smoke-${crypto.randomUUID()}@invalid.test` })
   await helpers.saveUser(alice)
   await helpers.saveUser(bob)
 
