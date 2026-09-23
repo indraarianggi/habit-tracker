@@ -25,7 +25,7 @@ function PrivacyPolicy() {
           <span className="section-number" aria-hidden="true">01</span>
           <div>
             <h2 id="identity-heading">Google identity</h2>
-            <p>When you sign in with Google, we keep your Google name, email address, and profile photo URL to identify your User and display your account. Google is used for sign-in, not to read your Google Tasks or other Google data. There is no password stored by this app.</p>
+            <p>When you sign in with Google, we keep your Google name, email address, and profile photo URL, as well as your Google account identifier and the authentication tokens Google provides to identify your User and keep you signed in. We do not request access to your Google Tasks. There is no password stored by this app.</p>
           </div>
         </section>
 
@@ -41,7 +41,7 @@ function PrivacyPolicy() {
           <span className="section-number" aria-hidden="true">03</span>
           <div>
             <h2 id="storage-heading">Storage and access</h2>
-            <p>When signed-in features are available, your work will be saved on your device and synced to the operator’s own homelab server so you can use multiple devices. Each User’s Tasks, Check-ins, Pomodoro Sessions and settings will be isolated from other Users; another User cannot read your records. We do not use analytics, advertising, tracking pixels or third-party trackers.</p>
+            <p>We store your User identity and session on the operator’s own homelab server in SQLite. When work features are available, your Tasks, Check-ins, Pomodoro Sessions and settings will be saved on your device and synced to that server for use across devices. Each User’s data is isolated from other Users; another User cannot read your records. We do not use analytics, advertising, tracking pixels or third-party trackers.</p>
           </div>
         </section>
 

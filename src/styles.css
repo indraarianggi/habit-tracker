@@ -2,6 +2,10 @@
 @import '@fontsource/plus-jakarta-sans/latin-600.css';
 @import '@fontsource/plus-jakarta-sans/latin-700.css';
 @import '@fontsource/plus-jakarta-sans/latin-800.css';
+@import '@fontsource/ibm-plex-sans/latin-400.css';
+@import '@fontsource/ibm-plex-sans/latin-500.css';
+@import '@fontsource/ibm-plex-sans/latin-600.css';
+@import '@fontsource/ibm-plex-sans/latin-700.css';
 
 :root {
   font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
@@ -13,7 +17,44 @@
 body { margin: 0; }
 a { color: #236948; text-underline-offset: .18em; }
 a:focus-visible { outline: 3px solid #2da46f; outline-offset: 4px; border-radius: 3px; }
-.landing { max-width: 32rem; padding: 4rem 1.25rem; margin: auto; }
+.sign-in { max-width: 30rem; min-height: 100svh; padding: clamp(4rem, 15vh, 10rem) 1.5rem 3rem; margin: auto; }
+.sign-in-mark { display: grid; place-items: center; width: 3.25rem; height: 3.25rem; margin-bottom: 2rem; border-radius: 1rem; color: #fff; background: #236948; font-size: 1.75rem; font-weight: 800; }
+.sign-in h1 { font-size: clamp(2.4rem, 9vw, 3.5rem); margin: .75rem 0 1rem; }
+.sign-in-description { color: #514a57; line-height: 1.7; margin-bottom: 2.5rem; }
+.sign-in-features { display: grid; gap: 14px; list-style: none; margin: 0 0 1.6rem; padding: 20px; background: #fff; border: 1px solid #e9e5dc; border-radius: 24px; font-family: 'IBM Plex Sans', sans-serif; }
+.sign-in-feature { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: 12px; }
+.feature-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: #e2f5eb; color: #2da46f; }
+.sign-in-feature h2 { margin: 0 0 2px; color: #1f1a24; font-size: .875rem; font-weight: 700; line-height: 1.25; }
+.sign-in-feature p { margin: 0; color: #76707d; font-size: .75rem; line-height: 1.45; }
+.google-button { display: block; width: 100%; min-height: 3.25rem; border: 0; border-radius: .9rem; color: #fff; background: #236948; font: inherit; font-weight: 700; cursor: pointer; }
+.google-button:hover { background: #18543a; }
+.google-button:focus-visible, .sign-out:focus-visible { outline: 3px solid #2da46f; outline-offset: 3px; }
+.google-button:disabled { opacity: .6; cursor: wait; }
+.sign-in-privacy { color: #655f6b; font-size: .85rem; line-height: 1.6; margin-top: 1.5rem; }
+.today-page { width: min(100%, 414px); min-height: 100svh; display: flex; flex-direction: column; margin: auto; font-family: 'IBM Plex Sans', sans-serif; }
+.today-header { min-height: 56px; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
+.today-brand { font-size: 1.375rem; font-weight: 700; letter-spacing: -.02em; }
+.today-header-actions { display: flex; align-items: center; gap: 8px; }
+.today-avatar { width: 34px; height: 34px; display: grid; place-items: center; overflow: hidden; border: 1.5px solid #2da46f; border-radius: 50%; background: #e2f5eb; color: #236948; font-weight: 700; }
+.today-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.sign-out { min-height: 44px; border: 0; background: transparent; padding: 0 4px; color: #76707d; font: inherit; font-size: .75rem; cursor: pointer; }
+.sign-out:hover { color: #1f1a24; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.today-content { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 24px; padding: 24px 20px; }
+.timer-empty-card { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 20px; border: 1px solid #e9e5dc; border-radius: 28px; background: #fff; text-align: center; }
+.timer-display { color: #76707d; font-size: 3.5rem; font-weight: 700; letter-spacing: -.035em; line-height: 1; font-variant-numeric: tabular-nums; }
+.timer-empty-card h2 { margin: 0; font-size: 1rem; font-weight: 700; line-height: 1.3; }
+.timer-empty-card p { margin: 0; color: #76707d; font-size: .75rem; line-height: 1.45; }
+.task-preview { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 10px 14px; border: 1px solid #e9e5dc; border-radius: 18px; background: #fff; color: #a39ea8; font-size: .875rem; }
+.task-preview svg { color: #2da46f; }
+.task-unavailable { margin: 6px 0 0; color: #76707d; font-size: .7rem; text-align: center; }
+.today-focus-card { padding: 16px; border: 1px solid #e9e5dc; border-radius: 22px; background: #fff; }
+.today-focus-card h2 { margin: 0 0 10px; font-size: .875rem; font-weight: 700; }
+.today-focus-card p { margin: 0; color: #a39ea8; font-size: .8125rem; }
+.bottom-nav { position: sticky; bottom: 0; display: flex; justify-content: space-around; align-items: center; min-height: 72px; padding: 8px 16px; border-top: 1px solid #e9e5dc; background: #fff; }
+.bottom-nav-item { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; width: 80px; height: 52px; border-radius: 16px; color: #76707d; font-size: .6875rem; font-weight: 500; }
+.bottom-nav-item[aria-disabled="true"] { opacity: .65; }
+.bottom-nav-active { background: #e2f5eb; color: #2da46f; font-weight: 700; }
 .privacy-page { min-height: 100vh; }
 .privacy-nav { max-width: 48rem; height: 64px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; }
 .back-link { color: #1f1a24; font-size: .875rem; font-weight: 700; text-decoration: none; }
@@ -31,6 +72,12 @@ h1 { font-size: clamp(2rem, 6vw, 3rem); letter-spacing: -.045em; line-height: 1.
 .policy-contact { background: #e2f5eb; border-color: #c6efd9; }
 .policy-contact a { font-weight: 700; }
 @media (max-width: 480px) {
+  .sign-in { padding: 2rem 1.25rem 2.5rem; }
+  .sign-in-mark { margin-bottom: 1rem; }
+  .sign-in h1 { font-size: clamp(2rem, 8vw, 2.4rem); margin-bottom: .75rem; }
+  .sign-in-description { margin-bottom: 1.25rem; }
+  .sign-in-features { padding: 16px; gap: 12px; margin-bottom: 1.25rem; }
+  .sign-in-privacy { margin-top: 1rem; }
   .privacy-nav { height: 56px; padding: 0 20px; }
   .privacy-content { padding: 12px 20px 48px; }
   .privacy-intro { padding-bottom: 17px; }
