@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     server: { port: 3000, strictPort: true },
+    preview: { strictPort: false },
     resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
     plugins: [
       tanstackStart({ spa: { enabled: true }, router: { routeFileIgnorePattern: '__tests__' } }),

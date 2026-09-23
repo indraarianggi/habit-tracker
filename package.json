@@ -23,11 +23,14 @@
     "better-sqlite3": "12.6.0",
     "class-variance-authority": "0.7.1",
     "cn": "0.3.3",
+    "dexie": "4.4.6",
     "lucide-react": "1.47.0",
     "nitro": "3.0.260903-beta",
     "radix-ui": "1.6.7",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "uuid": "14.0.2",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
@@ -38,6 +41,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
     "auth": "1.6.23",
+    "fake-indexeddb": "6.2.5",
     "tailwindcss": "4.3.3",
     "typescript": "6.0.2",
     "vite": "8.3.0"

@@ -1,6 +1,6 @@
 # Habit Tracker
 
-Ticket 01 publishes `/privacy`; ticket 02 adds Google sign-in and a private Today screen styled after the accepted Timer empty state in `habit-tracker.pen`. Task entry is labeled as unavailable and future navigation labels are noninteractive; task creation, focus sessions, sync, offline caching, and account deletion belong to later tickets. The single TypeScript package uses React and TanStack Start in SPA mode; its production output includes a Node server.
+Tickets 01–03 publish `/privacy`, Google sign-in, a private Today view and local-first Task creation with authenticated cross-device sync. Type a Task title and press Enter; the local IndexedDB write and Pending change are atomic, and the server uploads changes idempotently and downloads them in pages. A new device holds the loading screen until its first download finishes. Focus sessions, the Tasks and Progress tabs, service-worker offline navigation, and account deletion belong to later tickets. The single TypeScript package uses React and TanStack Start in SPA mode; its production output includes a Node server.
 
 UI styling uses Tailwind CSS v4 design tokens in `src/styles.css` and locally owned shadcn/ui primitives in `src/components/ui/`, customized to match `habit-tracker.pen`. Import application code through `@/` (mapped to `src/` in TypeScript and Vite). Playwright tests live alongside their routes/server code in `__tests__/*.test.ts`; route generation ignores those folders.
 
@@ -13,10 +13,12 @@ Requires Node 22.12+ and pnpm 11.20.0 (pinned in `package.json`). Run `pnpm inst
 - `pnpm run start` — serve that build on port 3000 (`PORT` can override the port)
 - `pnpm run typecheck` — TypeScript check after the router generates `src/routeTree.gen.ts`
 - `pnpm exec playwright install chromium` — one-time browser installation
-- `pnpm run smoke:browser` — launch the development server and exercise public privacy, Google authorization start, unsigned protection and signed-in per-User Today on a mobile browser
+- `pnpm run smoke:browser` — launch the development server and exercise public privacy, Google authorization start, private Today, Task entry and first-load recovery in a mobile browser, plus a headless two-store sync check against the real authenticated routes
 - `SMOKE_SERVER=production pnpm run smoke:browser` — exercise the same paths against a previously built server
 
 The smoke runner owns port 3000 and supplies **test-only** OAuth configuration, a test-only privacy contact, and isolated SQLite data; it does not contact Google or create a public test login. It seeds Better Auth sessions outside the production app to test the private routes. Stop another local server on that port first. For public deployment provide the contact at build time and all server variables at runtime; keep the SQLite file and its WAL files on persistent storage. Runtime changes to `VITE_` values do not alter built assets.
+
+Tasks live in IndexedDB per User, including Pending changes after a disconnect. An already-open Today view can create and read Tasks offline; offline page navigation/reload awaits the PWA shell in a later ticket. `POST /api/sync/push` and `GET /api/sync/pull?after=<seq>&limit=<1–100>` require a Better Auth session and scope every response to that User. The server migrates an existing auth-only SQLite database to the Task schema automatically at startup.
 
 ## Google sign-in configuration
 

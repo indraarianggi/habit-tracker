@@ -27,8 +27,7 @@ test('each session opens only its own private Today on mobile', async ({ browser
       await expect(alicePage.getByRole('region', { name: "Today's focus" }).getByText('No focus recorded today yet.')).toBeVisible()
       await expect(alicePage.getByLabel("Alice's profile")).toBeVisible()
       await expect(alicePage.getByRole('navigation', { name: 'Main sections' }).getByText('Timer')).toBeVisible()
-      await expect(alicePage.getByText('Task entry is coming in the next update.')).toBeVisible()
-      await expect(alicePage.getByRole('textbox')).toHaveCount(0)
+      await expect(alicePage.getByRole('textbox', { name: 'New Task' })).toBeVisible()
       await expect(alicePage.getByText('Bob')).toHaveCount(0)
       expect(await alicePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 
