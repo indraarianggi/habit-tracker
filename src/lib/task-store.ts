@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from 'uuid'
 import {
   localDay,
   nextOrderKey,
+  orderKeyBetween,
   taskRecordSchema,
   normalizeTaskTitle,
   type TaskChange,
@@ -74,6 +75,50 @@ export class TaskStore {
     return tasks.sort((left, right) =>
       left.orderKey < right.orderKey ? -1 : left.orderKey > right.orderKey ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
     )
+  }
+
+  private async saveEdit(userId: string, task: TaskRecord): Promise<void> {
+    const { userId: _userId, seq: _seq, ...changeTask } = task
+    await this.db.tasks.put(task)
+    await this.db.pending.add({ userId, id: uuidv7(), task: changeTask })
+  }
+
+  async renameTask(userId: string, id: string, input: string): Promise<void> {
+    const title = normalizeTaskTitle(input)
+    await this.db.transaction('rw', this.db.tasks, this.db.pending, async () => {
+      const task = await this.db.tasks.get([userId, id])
+      if (!task) throw new Error('Task not found.')
+      if (task.title !== title) await this.saveEdit(userId, { ...task, title })
+    })
+  }
+
+  async setTaskCompleted(userId: string, id: string, completed: boolean): Promise<void> {
+    await this.db.transaction('rw', this.db.tasks, this.db.pending, async () => {
+      const task = await this.db.tasks.get([userId, id])
+      if (!task) throw new Error('Task not found.')
+      if (task.completed !== completed) await this.saveEdit(userId, { ...task, completed })
+    })
+  }
+
+  async moveTask(userId: string, id: string, direction: 'up' | 'down'): Promise<boolean> {
+    return this.db.transaction('rw', this.db.tasks, this.db.pending, async () => {
+      const task = await this.db.tasks.get([userId, id])
+      if (!task) throw new Error('Task not found.')
+      const tasks = await this.listTasks(userId, task.day)
+      const index = tasks.findIndex((item) => item.id === id)
+      const neighbor = tasks[index + (direction === 'up' ? -1 : 1)]
+      if (!neighbor) return false
+      // Equal keys have an id tie-breaker. Put the moved Task outside the tied
+      // group, leaving every other Task's key untouched.
+      const bound = direction === 'up'
+        ? tasks.slice(0, index - 1).reverse().find((item) => item.orderKey < neighbor.orderKey)
+        : tasks.slice(index + 2).find((item) => item.orderKey > neighbor.orderKey)
+      const orderKey = direction === 'up'
+        ? orderKeyBetween(bound?.orderKey, neighbor.orderKey)
+        : orderKeyBetween(neighbor.orderKey, bound?.orderKey)
+      await this.saveEdit(userId, { ...task, orderKey })
+      return true
+    })
   }
 
   async pendingChanges(userId: string): Promise<TaskChange[]> {

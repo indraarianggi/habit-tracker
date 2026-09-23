@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { liveQuery } from 'dexie'
-import { LayoutGrid, Plus, RefreshCw, SquareCheck, Timer } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pencil, Plus, RefreshCw, SquareCheck, Timer, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { authClient } from '@/auth-client'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -13,6 +13,21 @@ import { syncTasks } from '@/lib/task-sync'
 type TodayUser = { id: string; name: string; image: string | null }
 const cachedUserKey = 'habit-tracker:last-user'
 
+
+function shiftDay(day: string, offset: number): string {
+  const [year, month, date] = day.split('-').map(Number)
+  const value = new Date(year, month - 1, date + offset, 12)
+  return localDay(value)
+}
+
+function dayDate(day: string): Date {
+  const [year, month, date] = day.split('-').map(Number)
+  return new Date(year, month - 1, date, 12)
+}
+
+function dayLabel(day: string): string {
+  return new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'short' }).format(dayDate(day))
+}
 export const Route = createFileRoute('/today')({ component: Today })
 
 function Today() {
@@ -28,11 +43,20 @@ function Today() {
   const [title, setTitle] = useState('')
   const [titleError, setTitleError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [view, setView] = useState<'timer' | 'tasks'>('timer')
+  const [selectedDay, setSelectedDay] = useState(localDay)
+  const [menuTaskId, setMenuTaskId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [actionError, setActionError] = useState('')
   const inFlight = useRef(false)
   const rerunRequested = useRef(false)
   const retryTimer = useRef<number | undefined>(undefined)
   const failures = useRef(0)
   const day = localDay()
+  const displayedDay = view === 'tasks' ? selectedDay : day
+  const menuTask = tasks.find(task => task.id === menuTaskId)
+  const editingTask = tasks.find(task => task.id === editingId)
 
   useEffect(() => {
     const instance = new TaskStore()
@@ -128,22 +152,27 @@ function Today() {
       setPending(state.pending)
       void sync()
     })
-    const subscription = liveQuery(() => store.listTasks(user.id, day)).subscribe({
-      next: records => { if (active) setTasks(records) },
-      error: () => { if (active) setSyncError('Could not read Tasks on this device.') },
-    })
     const reconnect = () => void sync()
     const foreground = () => { if (document.visibilityState === 'visible') void sync() }
     window.addEventListener('online', reconnect)
     document.addEventListener('visibilitychange', foreground)
     return () => {
       active = false
-      subscription.unsubscribe()
       window.removeEventListener('online', reconnect)
       document.removeEventListener('visibilitychange', foreground)
       clearTimeout(retryTimer.current)
     }
-  }, [store, user, day, sync])
+  }, [store, user, sync])
+
+  useEffect(() => {
+    if (!store || !user) return
+    setTasks([])
+    const subscription = liveQuery(() => store.listTasks(user.id, displayedDay)).subscribe({
+      next: setTasks,
+      error: () => setSyncError('Could not read Tasks on this device.'),
+    })
+    return () => subscription.unsubscribe()
+  }, [store, user, displayedDay])
 
   useEffect(() => {
     if (!user && firstLoadError) {
@@ -167,6 +196,49 @@ function Today() {
       setTitleError(reason instanceof Error ? reason.message : 'Could not save Task on this device.')
     }
   }
+
+  async function changeTask(action: () => Promise<unknown>): Promise<boolean> {
+    if (!store || !user) return false
+    try {
+      await action()
+      setActionError('')
+      setMenuTaskId(null)
+      await refreshPending()
+      void sync()
+      return true
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : 'Could not save Task on this device.')
+      return false
+    }
+  }
+
+  function startRename(task: TaskRecord) {
+    setMenuTaskId(null)
+    setEditingId(task.id)
+    setEditTitle(task.title)
+    setActionError('')
+  }
+
+  async function saveRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!store || !user || !editingTask) return
+    if (await changeTask(() => store.renameTask(user.id, editingTask.id, editTitle))) {
+      setEditingId(null)
+    }
+  }
+
+  useEffect(() => {
+    if (!menuTaskId && !editingId) return
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuTaskId(null)
+        setEditingId(null)
+        setActionError('')
+      }
+    }
+    document.addEventListener('keydown', dismiss)
+    return () => document.removeEventListener('keydown', dismiss)
+  }, [menuTaskId, editingId])
 
   async function signOut() {
     try {
@@ -199,6 +271,8 @@ function Today() {
     )
   }
 
+  const weekStart = shiftDay(selectedDay, -((dayDate(selectedDay).getDay() + 6) % 7))
+
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
       <header className="flex min-h-14 items-center justify-between px-5">
@@ -219,8 +293,8 @@ function Today() {
         </div>
       )}
       {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
-      <h1 className="sr-only">Today</h1>
-      <div className="flex flex-1 flex-col justify-center gap-4 px-5 py-6">
+      <h1 className="sr-only">{view === 'tasks' ? 'Tasks' : 'Today'}</h1>
+      {view === 'timer' ? <div className="flex flex-1 flex-col justify-center gap-4 px-5 py-6">
         <section aria-labelledby="timer-heading">
           <Card className="items-center gap-3 rounded-[26px] px-5 py-6 text-center shadow-none">
             <span className="font-sans text-[56px] leading-none font-bold tracking-[-.035em] text-foreground tabular-nums" aria-label="Default focus interval: 25 minutes">25:00</span>
@@ -242,9 +316,9 @@ function Today() {
             </div>
             {titleError && <p id="task-title-error" role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
           </form>
-          {tasks.map(task => <button type="button" key={task.id} onClick={() => setSelectedId(task.id)} aria-label={`${task.title}, incomplete`} aria-pressed={selectedId === task.id} className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-2xl border bg-card px-3.5 py-2.5 text-left text-[13px] font-semibold ${selectedId === task.id ? 'border-mint' : 'border-border'}`}>
+          {tasks.map(task => <button type="button" key={task.id} onClick={() => setSelectedId(task.id)} aria-label={`${task.title}, ${task.completed ? 'complete' : 'open'}, 0 focused minutes`} aria-pressed={selectedId === task.id} className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-2xl border bg-card px-3.5 py-2.5 text-left text-[13px] font-semibold ${selectedId === task.id ? 'border-mint' : 'border-border'}`}>
             <span className={`size-[18px] shrink-0 rounded-full border-2 ${selectedId === task.id ? 'grid place-items-center border-mint' : 'border-border'}`}>{selectedId === task.id && <span className="size-2 rounded-full bg-mint" />}</span>
-            <span className="min-w-0 flex-1 break-words">{task.title}</span>
+            <span className={`min-w-0 flex-1 break-words ${task.completed ? 'text-muted-foreground line-through' : ''}`}>{task.title}</span>
             <span className="shrink-0 text-[11px] font-medium text-ink-tertiary">No focus</span>
           </button>)}
         </section>
@@ -254,12 +328,71 @@ function Today() {
             <p className="text-[13px] text-ink-tertiary">No focus recorded today yet.</p>
           </Card>
         </section>
-      </div>
+      </div> : <div className="flex flex-1 flex-col gap-3 px-4 py-3">
+        <section aria-label="Choose a Day" className="rounded-2xl border border-border bg-card p-2.5">
+          <div className="flex items-center justify-between px-1 pb-2">
+            <button type="button" aria-label="Previous day" onClick={() => setSelectedDay(value => shiftDay(value, -1))} className="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint"><ChevronLeft size={18} aria-hidden="true" /></button>
+            <span className="text-xs font-semibold">{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(dayDate(selectedDay))}</span>
+            <button type="button" aria-label="Next day" disabled={selectedDay >= day} onClick={() => setSelectedDay(value => shiftDay(value, 1))} className="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint disabled:opacity-30"><ChevronRight size={18} aria-hidden="true" /></button>
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {Array.from({ length: 7 }, (_, index) => shiftDay(weekStart, index)).map(date => (
+              <button key={date} type="button" disabled={date > day} onClick={() => setSelectedDay(date)} aria-label={dayLabel(date)} aria-current={date === selectedDay ? 'date' : undefined} className={`flex min-w-0 flex-col items-center rounded-[10px] py-1.5 text-[11px] disabled:opacity-30 ${date === selectedDay ? 'bg-mint-surface font-bold text-mint-ink' : 'bg-surface-subtle text-muted-foreground'}`}>
+                <span>{new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(dayDate(date))}</span>
+                <span className="text-sm font-semibold">{dayDate(date).getDate()}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+        <section aria-labelledby="day-tasks-heading" className="rounded-[22px] border border-border bg-card p-3">
+          <h2 id="day-tasks-heading" className="font-display text-base font-bold">{selectedDay === day ? 'Today' : dayLabel(selectedDay)}</h2>
+          <p className="mb-3 text-[11px] text-muted-foreground">0m focused · 0 Check-ins · {tasks.filter(task => task.completed).length} of {tasks.length} tasks completed</p>
+          {selectedDay === day && <form onSubmit={event => void addTask(event)} className="mb-2">
+            <div className="flex min-h-[42px] items-center gap-2 rounded-[14px] bg-surface-subtle px-3 focus-within:outline-2 focus-within:outline-mint">
+              <Plus size={16} className="text-mint" aria-hidden="true" />
+              <input aria-label="New Task" aria-describedby={titleError ? 'task-title-error' : undefined} value={title} onChange={event => { setTitle(event.target.value); setTitleError('') }} placeholder="Add a Task…" className="min-w-0 flex-1 bg-transparent py-2.5 text-[13px] outline-none placeholder:text-ink-tertiary" />
+            </div>
+            {titleError && <p id="task-title-error" role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
+          </form>}
+          <ul aria-label="Tasks for selected Day" className="flex flex-col gap-1.5">
+            {tasks.map(task => <li key={task.id} aria-label={`${task.title}, ${task.completed ? 'complete' : 'open'}, 0 focused minutes`} className="flex min-h-[46px] items-center gap-2 rounded-xl border border-border bg-card px-2.5 py-1.5">
+              <span aria-hidden="true" className={`grid size-[20px] shrink-0 place-items-center rounded-md border ${task.completed ? 'border-mint bg-mint text-white' : 'border-border'}`}>{task.completed && <Check size={14} />}</span>
+              <span className={`min-w-0 flex-1 break-words text-[13px] font-semibold ${task.completed ? 'text-muted-foreground line-through' : ''}`}>{task.title}</span>
+              <span aria-hidden="true" className="shrink-0 text-[10px] text-ink-tertiary">No focus</span>
+              <button type="button" aria-label={`Actions for ${task.title}`} onClick={() => { setMenuTaskId(task.id); setActionError('') }} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint"><EllipsisVertical size={17} aria-hidden="true" /></button>
+            </li>)}
+          </ul>
+          {tasks.length === 0 && <p className="py-3 text-center text-xs text-muted-foreground">No Tasks for this Day.</p>}
+        </section>
+      </div>}
       <nav className="sticky bottom-0 flex min-h-[72px] items-center justify-around border-t border-border bg-card px-4 py-2 pb-[max(8px,env(safe-area-inset-bottom))]" aria-label="Main sections">
-        <span className="flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl bg-mint-surface text-[11px] font-bold text-mint" aria-current="page"><Timer size={20} aria-hidden="true" />Timer</span>
-        <span className="flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-medium text-muted-foreground opacity-65" aria-disabled="true" title="Tasks are coming in a later update"><SquareCheck size={20} aria-hidden="true" />Tasks</span>
+        <button type="button" onClick={() => setView('timer')} aria-current={view === 'timer' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'timer' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><Timer size={20} aria-hidden="true" />Timer</button>
+        <button type="button" onClick={() => setView('tasks')} aria-current={view === 'tasks' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'tasks' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><SquareCheck size={20} aria-hidden="true" />Tasks</button>
         <span className="flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-medium text-muted-foreground opacity-65" aria-disabled="true" title="Progress is coming in a later update"><LayoutGrid size={20} aria-hidden="true" />Progress</span>
       </nav>
+      {(menuTask || editingTask) && <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/35" onClick={() => { setMenuTaskId(null); setEditingId(null); setActionError('') }}>
+        <section role="dialog" aria-modal="true" aria-label={editingTask ? `Rename ${editingTask.title}` : `Actions for ${menuTask?.title}`} onClick={event => event.stopPropagation()} className="w-full max-w-[414px] rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="break-words text-base font-bold">{editingTask ? 'Rename Task' : menuTask?.title}</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">{dayLabel((editingTask ?? menuTask)!.day)} · 0m focused</p>
+            </div>
+            <button type="button" aria-label="Close Task actions" onClick={() => { setMenuTaskId(null); setEditingId(null); setActionError('') }} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground"><X size={19} aria-hidden="true" /></button>
+          </div>
+          {editingTask ? <form onSubmit={event => void saveRename(event)} className="flex flex-col gap-3">
+            <label className="text-xs font-semibold" htmlFor="edit-task-title">Task title</label>
+            <input id="edit-task-title" aria-label="Task title" autoFocus value={editTitle} onChange={event => { setEditTitle(event.target.value); setActionError('') }} className="h-11 rounded-xl border border-border px-3 text-sm outline-none focus:border-mint" />
+            {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
+            <Button type="submit" className="h-11 rounded-xl bg-mint text-white hover:bg-mint-ink">Save title</Button>
+          </form> : menuTask && <div className="flex flex-col gap-1">
+            <button type="button" autoFocus onClick={() => startRename(menuTask)} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle"><Pencil size={18} aria-hidden="true" />Rename Task</button>
+            <button type="button" onClick={() => void changeTask(() => store!.setTaskCompleted(user.id, menuTask.id, !menuTask.completed))} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle"><Check size={18} aria-hidden="true" />{menuTask.completed ? 'Reopen Task' : 'Mark as complete'}</button>
+            <button type="button" disabled={tasks[0]?.id === menuTask.id} onClick={() => void changeTask(() => store!.moveTask(user.id, menuTask.id, 'up'))} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle disabled:opacity-35"><ArrowUp size={18} aria-hidden="true" />Move up</button>
+            <button type="button" disabled={tasks.at(-1)?.id === menuTask.id} onClick={() => void changeTask(() => store!.moveTask(user.id, menuTask.id, 'down'))} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle disabled:opacity-35"><ArrowDown size={18} aria-hidden="true" />Move down</button>
+            {actionError && <p role="alert" className="px-3 text-xs text-destructive">{actionError}</p>}
+          </div>}
+        </section>
+      </div>}
     </main>
   )
 }

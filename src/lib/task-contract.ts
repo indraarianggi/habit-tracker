@@ -11,7 +11,7 @@ const taskBodySchema = z.strictObject({
   day: daySchema,
   title: z.string().trim().min(1).max(120),
   completed: z.boolean(),
-  orderKey: z.string().min(1).max(256),
+  orderKey: z.string().regex(/^[0-9a-f]{32}$/),
   createdAt: z.iso.datetime(),
 })
 
@@ -69,4 +69,11 @@ export function nextOrderKey(keys: string[]): string {
 
   if (maximum > ORDER_MAX - ORDER_STEP) throw new Error('Task order keys exhausted.')
   return (maximum + ORDER_STEP).toString(16).padStart(32, '0')
+}
+
+export function orderKeyBetween(lower?: string, upper?: string): string {
+  const low = lower ? BigInt(`0x${lower}`) : 0n
+  const high = upper ? BigInt(`0x${upper}`) : ORDER_MAX
+  if (high - low < 2n) throw new Error('No room to move this Task in the current order.')
+  return (low + (high - low) / 2n).toString(16).padStart(32, '0')
 }
