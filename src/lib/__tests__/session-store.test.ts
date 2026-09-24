@@ -33,7 +33,8 @@ test('separate devices converge offline finish and exact early stop minute bound
     const startAt = Date.parse(session.startedAt)
     expect(Math.floor(elapsedFocusMs(session, startAt + 59_999) / 60_000)).toBe(0)
     expect(Math.floor(elapsedFocusMs(session, startAt + 60_000) / 60_000)).toBe(1)
-    expect(elapsedFocusMs({ ...session, status: 'paused', elapsedMs: 60_000, segmentStartedAt: null }, startAt + 3_600_000)).toBe(60_000)
+    expect(elapsedFocusMs(session, startAt + 30 * 60_000)).toBe(session.plannedMinutes * 60_000)
+    expect(elapsedFocusMs({ ...session, status: 'paused', elapsedMs: 60_000, segmentStartedAt: null }, startAt + 26 * 60 * 60_000)).toBe(60_000)
     await syncSession(second, user.id, authorized)
     expect((await second.snapshot(user.id)).session?.id).toBe(session.id)
     await first.finish(user.id, 'finish')
@@ -65,6 +66,52 @@ test('separate devices converge offline finish and exact early stop minute bound
     await syncSession(second, user.id, authorized)
     expect((await second.snapshot(user.id)).checkins.map(checkin => checkin.durationMinutes).sort((a, b) => a - b)).toEqual([1, 25])
     expect((await tasks.listTasks(user.id, task.day))[0].completed).toBe(false)
+  } finally {
+    first.close()
+    second.close()
+    tasks.close()
+    await helpers.deleteUser(user.id)
+  }
+})
+
+test('two devices replace provisional outcomes with the first committed server receipt', async () => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `session-conflict-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  const factory = new IDBFactory()
+  const first = new SessionStore(`focus-conflict-a-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  const second = new SessionStore(`focus-conflict-b-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  const tasks = new TaskStore(`focus-conflict-tasks-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  try {
+    const login = await helpers.login({ userId: user.id })
+    const authorized: typeof fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      fetch(new URL(String(input), origin), { ...init, headers: new Headers([...login.headers, ...new Headers(init?.headers)]) })) as typeof fetch
+    const task = await tasks.createTask(user.id, 'Same outcome everywhere', localDay())
+    await syncTasks(tasks, user.id, authorized)
+
+    const discarded = await startSession(task.id, task.day, authorized)
+    await first.started(user.id, discarded)
+    await syncSession(second, user.id, authorized)
+    await first.finish(user.id, 'save', 7)
+    await second.finish(user.id, 'discard')
+    await syncSession(second, user.id, authorized)
+    await syncSession(first, user.id, authorized)
+    expect((await first.snapshot(user.id)).checkins).toEqual([])
+    expect((await second.snapshot(user.id)).checkins).toEqual([])
+
+    const saved = await startSession(task.id, task.day, authorized)
+    await first.started(user.id, saved)
+    await syncSession(second, user.id, authorized)
+    await first.finish(user.id, 'save', 7)
+    await second.finish(user.id, 'discard')
+    await syncSession(first, user.id, authorized)
+    await syncSession(second, user.id, authorized)
+    const onFirst = await first.snapshot(user.id)
+    const onSecond = await second.snapshot(user.id)
+    expect(onFirst.session).toBeNull()
+    expect(onSecond.session).toBeNull()
+    expect(onFirst.checkins).toEqual(onSecond.checkins)
+    expect(onFirst.checkins).toMatchObject([{ sourceSessionId: saved.id, durationMinutes: 7 }])
   } finally {
     first.close()
     second.close()

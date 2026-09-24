@@ -167,6 +167,150 @@ test('offline controls replay elapsed segments by event time and reject stale co
   }
 })
 
+test('a running Session survives a sleep-length wall-clock gap and stops accruing when paused on another device', async () => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `session-sleep-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  try {
+    const first = asUser((await helpers.login({ userId: user.id })).headers)
+    const second = asUser((await helpers.login({ userId: user.id })).headers)
+    const taskId = await pushTask(first)
+    const id = uuidv7()
+    expect((await first('/api/session/start', { id, taskId, day, plannedMinutes: 25 })).status).toBe(200)
+
+    // Shift the persisted wall-clock anchors instead of waiting for the server clock.
+    const startedAt = new Date(Date.now() - 30 * 60_000).toISOString()
+    database.prepare(`
+      UPDATE active_session SET startedAt = ?, segmentStartedAt = ?, lastControlAt = ? WHERE id = ?
+    `).run(startedAt, startedAt, startedAt, id)
+    const recovered = (await (await second('/api/session')).json()).session
+    expect(recovered).toMatchObject({
+      id, status: 'running', startedAt, segmentStartedAt: startedAt, elapsedMs: 0, plannedMinutes: 25,
+    })
+    expect(Math.max(0, recovered.plannedMinutes * 60_000 - recovered.elapsedMs
+      - (Date.now() - Date.parse(recovered.segmentStartedAt)))).toBe(0)
+
+    const pause = await second('/api/session/control', { id, action: 'pause' })
+    expect(pause.status).toBe(200)
+    expect((await pause.json()).session).toMatchObject({
+      status: 'paused', segmentStartedAt: null, elapsedMs: 25 * 60_000,
+    })
+    expect((await (await first('/api/session')).json()).session).toMatchObject({
+      id, status: 'paused', segmentStartedAt: null, elapsedMs: 25 * 60_000,
+    })
+    expect((await first('/api/session/finish', { id, outcome: 'discard' })).status).toBe(200)
+  } finally {
+    await helpers.deleteUser(user.id)
+  }
+})
+
+test('a paused Session stays paused across a long absence and resumes without charging the pause gap', async () => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `session-paused-gap-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  try {
+    const first = asUser((await helpers.login({ userId: user.id })).headers)
+    const second = asUser((await helpers.login({ userId: user.id })).headers)
+    const taskId = await pushTask(first)
+    const id = uuidv7()
+    expect((await first('/api/session/start', { id, taskId, day, plannedMinutes: 25 })).status).toBe(200)
+    const startedAt = new Date(Date.now() - 2 * 60_000).toISOString()
+    database.prepare(`
+      UPDATE active_session SET startedAt = ?, segmentStartedAt = ?, lastControlAt = ? WHERE id = ?
+    `).run(startedAt, startedAt, startedAt, id)
+    const paused = await first('/api/session/control', { id, action: 'pause' })
+    expect(paused.status).toBe(200)
+    const pausedElapsed = (await paused.json()).session.elapsedMs
+    expect(pausedElapsed).toBeGreaterThanOrEqual(2 * 60_000)
+    expect(pausedElapsed).toBeLessThan(3 * 60_000)
+
+    // Moving the original start a day earlier simulates returning long after the pause.
+    database.prepare('UPDATE active_session SET startedAt = ? WHERE id = ?').run(
+      new Date(Date.now() - 26 * 60 * 60_000).toISOString(), id,
+    )
+    const recovered = (await (await second('/api/session')).json()).session
+    expect(recovered).toMatchObject({ id, status: 'paused', segmentStartedAt: null, elapsedMs: pausedElapsed })
+    const beforeResume = Date.now()
+    const resumed = await second('/api/session/control', { id, action: 'resume' })
+    expect(resumed.status).toBe(200)
+    expect((await resumed.json()).session).toMatchObject({
+      id, status: 'running', elapsedMs: pausedElapsed,
+    })
+    const onFirst = (await (await first('/api/session')).json()).session
+    expect(onFirst).toMatchObject({ id, status: 'running', elapsedMs: pausedElapsed })
+    expect(Date.parse(onFirst.segmentStartedAt)).toBeGreaterThanOrEqual(beforeResume)
+    expect((await second('/api/session/finish', { id, outcome: 'discard' })).status).toBe(200)
+  } finally {
+    await helpers.deleteUser(user.id)
+  }
+})
+
+test('later recovery records full or partial focus on the original Task Day and no Check-in for none', async () => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `session-midnight-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  try {
+    const first = asUser((await helpers.login({ userId: user.id })).headers)
+    const second = asUser((await helpers.login({ userId: user.id })).headers)
+    const taskDay = new Date(Date.now() - 36 * 60 * 60_000).toISOString().slice(0, 10)
+    const taskId = await pushTask(first, false, taskDay)
+    const originalStart = `${taskDay}T23:55:00.000Z`
+    const expectedCheckins: { sourceSessionId: string; durationMinutes: number }[] = []
+    let previous: { id: string; receipt: unknown } | null = null
+    for (const [outcome, durationMinutes, expectedMinutes] of [
+      ['finish', 8, 25],
+      ['save', 7, 7],
+      ['discard', undefined, null],
+    ] as const) {
+      const id = uuidv7()
+      const started = await first('/api/session/start', { id, taskId, day: taskDay, plannedMinutes: 25 })
+      expect(started.status).toBe(200)
+      database.prepare(`
+        UPDATE active_session SET startedAt = ?, segmentStartedAt = ?, lastControlAt = ? WHERE id = ?
+      `).run(originalStart, originalStart, originalStart, id)
+      expect((await (await second('/api/session')).json()).session).toMatchObject({
+        id, taskId, day: taskDay, plannedMinutes: 25, startedAt: originalStart,
+      })
+      if (previous) {
+        const retry = await first('/api/session/finish', { id: previous.id, outcome: 'discard' })
+        expect(retry.status).toBe(200)
+        expect(await retry.json()).toEqual(previous.receipt)
+        expect((await (await second('/api/session')).json()).session.id).toBe(id)
+      }
+
+      const result = await second('/api/session/finish', { id, outcome, ...(durationMinutes && { durationMinutes }) })
+      expect(result.status).toBe(200)
+      const receipt = await result.json()
+      expect(receipt).toMatchObject({ sessionId: id, outcome: expectedMinutes === null ? 'discarded' : 'saved' })
+      if (expectedMinutes === null) {
+        expect(receipt.checkin).toBeNull()
+      } else {
+        expect(receipt.checkin).toMatchObject({
+          taskId, sourceSessionId: id, durationMinutes: expectedMinutes, origin: 'session',
+        })
+        expect(receipt.checkin).not.toHaveProperty('day')
+        expect(receipt.checkin.createdAt.slice(0, 10)).not.toBe(taskDay)
+        expectedCheckins.push(receipt.checkin)
+      }
+      const conflicting = await first('/api/session/finish', {
+        id, outcome: outcome === 'discard' ? 'finish' : 'discard',
+      })
+      expect(conflicting.status).toBe(200)
+      expect(await conflicting.json()).toEqual(receipt)
+      const snapshot = await (await first('/api/session')).json()
+      expect(snapshot.session).toBeNull()
+      expect(snapshot.checkins).toEqual(expectedCheckins)
+      expect((await first('/api/session/start', { id, taskId, day: taskDay, plannedMinutes: 25 })).status).toBe(409)
+      previous = { id, receipt }
+    }
+    const pull = await (await second('/api/sync/pull?after=0')).json()
+    const originalTask = pull.changes.find((change: { task: TaskRecord }) => change.task.id === taskId).task
+    expect(originalTask.day).toBe(taskDay)
+  } finally {
+    await helpers.deleteUser(user.id)
+  }
+})
+
 test('simultaneous terminal requests share the first committed receipt', async () => {
   const helpers = (await testAuth.$context).test
   const user = helpers.createUser({ email: `session-finalize-${crypto.randomUUID()}@invalid.test` })

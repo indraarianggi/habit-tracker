@@ -43,13 +43,19 @@ function Today() {
   const [connected, setConnected] = useState(true)
   const [focusError, setFocusError] = useState('')
   const [stopMinutes, setStopMinutes] = useState<number | null>(null)
+  const [awaySessionId, setAwaySessionId] = useState<string | null>(null)
+  const [partialRecovery, setPartialRecovery] = useState(false)
+  const [recoveryMinutes, setRecoveryMinutes] = useState('')
+  const [focusEndMinutes, setFocusEndMinutes] = useState<number | null>(null)
   const [resumeAfterCancel, setResumeAfterCancel] = useState(false)
   const [starting, setStarting] = useState(false)
   const [clockNow, setClockNow] = useState(Date.now)
   const syncingFocus = useRef(false)
   const rerunFocus = useRef(false)
+  const focusReady = useRef(false)
   const finishingFocus = useRef(false)
   const observedRunning = useRef<string | null>(null)
+  const lastTick = useRef(Date.now())
   const manuallySelected = useRef(false)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [ready, setReady] = useState(false)
@@ -111,6 +117,10 @@ function Today() {
     syncingFocus.current = true
     try {
       await syncSession(focusStore, user.id)
+      if (!focusReady.current) {
+        setFocus(await focusStore.snapshot(user.id))
+        focusReady.current = true
+      }
       setConnected(true)
       setFocusLoaded(true)
       setFocusError('')
@@ -134,9 +144,21 @@ function Today() {
     })
     const online = () => { setConnected(true); void syncFocus() }
     const offline = () => setConnected(false)
+    const foreground = () => {
+      if (document.visibilityState !== 'visible') observedRunning.current = null
+      setClockNow(Date.now())
+      lastTick.current = Date.now()
+      if (document.visibilityState === 'visible') void syncFocus()
+    }
     window.addEventListener('online', online)
     window.addEventListener('offline', offline)
-    const clock = window.setInterval(() => setClockNow(Date.now()), 1000)
+    document.addEventListener('visibilitychange', foreground)
+    const clock = window.setInterval(() => {
+      const now = Date.now()
+      if (now - lastTick.current > 5000) observedRunning.current = null
+      lastTick.current = now
+      setClockNow(now)
+    }, 1000)
     const poll = window.setInterval(() => { if (navigator.onLine) void syncFocus() }, 5000)
     setConnected(navigator.onLine)
     void syncFocus()
@@ -146,6 +168,7 @@ function Today() {
       window.clearInterval(poll)
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
+      document.removeEventListener('visibilitychange', foreground)
     }
   }, [focusStore, user, syncFocus])
 
@@ -160,12 +183,15 @@ function Today() {
     }
   }, [view, tasks, focus.lastTaskId])
 
-  async function finishFocus(outcome: 'finish' | 'save' | 'discard', durationMinutes?: number) {
+  async function finishFocus(outcome: 'finish' | 'save' | 'discard', durationMinutes?: number, alertOnFinish = false) {
     if (!focusStore || !user || finishingFocus.current) return
     finishingFocus.current = true
     try {
       await focusStore.finish(user.id, outcome, durationMinutes)
       setStopMinutes(null)
+      setAwaySessionId(null)
+      setPartialRecovery(false)
+      if (alertOnFinish) setFocusEndMinutes(focus.session?.plannedMinutes ?? null)
       setFocusError('')
       void syncFocus()
     } catch (reason) {
@@ -176,14 +202,18 @@ function Today() {
   }
 
   useEffect(() => {
-    if (!activeFocus || activeFocus.status !== 'running' || !focusStore || !user) return
+    if (!activeFocus || activeFocus.status !== 'running' || !focusStore || !user || (!focusLoaded && connected)) return
     if (elapsedMs < activeFocus.plannedMinutes * 60_000) {
-      observedRunning.current = activeFocus.id
-    } else if (observedRunning.current === activeFocus.id && document.visibilityState === 'visible') {
-      observedRunning.current = null
-      void finishFocus('finish')
+      if (document.visibilityState === 'visible') observedRunning.current = activeFocus.id
+    } else if (!finishingFocus.current && document.visibilityState === 'visible') {
+      if (observedRunning.current === activeFocus.id) {
+        observedRunning.current = null
+        void finishFocus('finish', undefined, true)
+      } else {
+        setAwaySessionId(activeFocus.id)
+      }
     }
-  }, [activeFocus, elapsedMs, focusStore, user])
+  }, [activeFocus, elapsedMs, focusStore, user, focusLoaded, connected])
 
   async function beginFocus() {
     const selected = tasks.find(task => task.id === selectedId)
@@ -194,6 +224,7 @@ function Today() {
       const session = await startSession(selected.id, localDay())
       await focusStore.started(user.id, session)
       observedRunning.current = session.id
+      setFocusEndMinutes(null)
       setClockNow(Date.now())
       setFocusError('')
     } catch (reason) {
@@ -492,6 +523,10 @@ function Today() {
         </div>
       )}
       {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
+      {focusEndMinutes !== null && <div role="alert" aria-label="Focus interval complete" className="mx-5 flex items-center justify-between gap-3 rounded-2xl border border-mint bg-mint-surface px-4 py-3 text-sm font-semibold text-mint-ink">
+        <span>Focus interval complete · {focusEndMinutes} min recorded</span>
+        <button type="button" aria-label="Dismiss focus alert" onClick={() => setFocusEndMinutes(null)} className="grid size-9 shrink-0 place-items-center rounded-lg focus-visible:outline-2 focus-visible:outline-mint"><X size={17} aria-hidden="true" /></button>
+      </div>}
       <h1 className="sr-only">{view === 'tasks' ? 'Tasks' : 'Today'}</h1>
       {view === 'timer' ? <div className="flex flex-1 flex-col gap-4 px-5 py-5">
         <section aria-labelledby="timer-heading">
@@ -639,6 +674,29 @@ function Today() {
           <Button type="button" onClick={() => void finishFocus('save', stopMinutes)} className="min-h-11 rounded-xl bg-primary text-white">Save {stopMinutes} min</Button>
           <Button type="button" variant="outline" onClick={() => void finishFocus('discard')} className="min-h-11 rounded-xl">Discard focus</Button>
           <button type="button" className="min-h-11 text-sm text-muted-foreground" onClick={() => { setStopMinutes(null); if (resumeAfterCancel) void toggleFocus() }}>Keep Session</button>
+        </section>
+      </div>}
+      {awaySessionId === activeFocus?.id && activeFocus.status === 'running' && elapsedMs >= activeFocus.plannedMinutes * 60_000 && <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-5">
+        <section role="dialog" aria-modal="true" aria-label="While you were away" className="flex w-full max-w-[374px] flex-col gap-4 rounded-[32px] border border-border bg-card p-6 shadow-xl">
+          <div>
+            <h2 className="font-display text-xl font-extrabold">While you were away</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Your focus interval ended while you were away. How much focused time would you like to record?</p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Button type="button" onClick={() => void finishFocus('finish')} className="min-h-12 rounded-2xl bg-primary text-white">Fully finished · {activeFocus.plannedMinutes} min</Button>
+            <Button type="button" variant="outline" onClick={() => { setPartialRecovery(true); setRecoveryMinutes('') }} className="min-h-12 rounded-2xl">Partly finished</Button>
+            {partialRecovery && <form onSubmit={event => {
+              event.preventDefault()
+              const minutes = Number(recoveryMinutes)
+              if (Number.isInteger(minutes) && minutes >= 1 && minutes < activeFocus.plannedMinutes) void finishFocus('save', minutes)
+            }} className="flex flex-col gap-2 rounded-2xl bg-surface-subtle p-3">
+              <label htmlFor="recovery-minutes" className="text-xs font-semibold">Whole focused minutes</label>
+              <input id="recovery-minutes" aria-label="Focused minutes" type="number" required min={1} max={activeFocus.plannedMinutes - 1} step={1} value={recoveryMinutes} onChange={event => setRecoveryMinutes(event.target.value)} className="h-11 w-full rounded-xl border border-border bg-card px-3 text-base outline-none focus:border-mint" />
+              <Button type="submit" disabled={!Number.isInteger(Number(recoveryMinutes)) || Number(recoveryMinutes) < 1 || Number(recoveryMinutes) >= activeFocus.plannedMinutes} className="min-h-11 rounded-xl bg-primary text-white">Save {recoveryMinutes || '0'} min</Button>
+            </form>}
+            <Button type="button" variant="outline" onClick={() => void finishFocus('discard')} className="min-h-12 rounded-2xl">No focus</Button>
+          </div>
+          {focusError && <p role="alert" className="text-xs text-destructive">{focusError}</p>}
         </section>
       </div>}
     </main>

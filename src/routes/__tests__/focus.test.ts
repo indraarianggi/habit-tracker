@@ -49,6 +49,8 @@ test('Timer selects completed Tasks, blocks offline Start, controls focus and re
     await page.getByRole('button', { name: 'Resume Session' }).click()
     await context.setOffline(true)
     await page.clock.fastForward(25 * 60_000)
+    await expect(page.getByRole('dialog', { name: 'While you were away' })).toBeVisible()
+    await page.getByRole('button', { name: 'Fully finished · 25 min' }).click()
     await expect(page.getByText('25 min')).toBeVisible()
     await expect(page.getByText('Pomodoro')).toBeVisible()
     await context.setOffline(false)
