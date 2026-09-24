@@ -51,23 +51,44 @@ export class TaskStore {
       throw new Error('Tasks can only be created for today or a future day.')
     }
 
+    return this.db.transaction('rw', this.db.tasks, this.db.pending, () => this.appendTask(userId, title, day))
+  }
+
+  async copyTask(userId: string, sourceId: string, targetDay: string): Promise<TaskRecord> {
     return this.db.transaction('rw', this.db.tasks, this.db.pending, async () => {
-      const tasks = await this.db.tasks.where('[userId+day]').equals([userId, day]).toArray()
-      const task: TaskRecord = {
-        id: uuidv7(),
-        userId,
-        day,
-        title,
-        completed: false,
-        orderKey: nextOrderKey(tasks.map((existing) => existing.orderKey)),
-        createdAt: new Date().toISOString(),
-        seq: 0,
-      }
-      const { userId: _userId, seq: _seq, ...changeTask } = task
-      await this.db.tasks.add(task)
-      await this.db.pending.add({ userId, id: uuidv7(), task: changeTask })
-      return task
+      const source = await this.db.tasks.get([userId, sourceId])
+      if (!source) throw new Error('Task not found.')
+      if (source.completed) throw new Error('Only unfinished Tasks can be copied.')
+      if (!taskRecordSchema.shape.day.safeParse(targetDay).success) throw new Error('Enter a valid day.')
+      if (targetDay <= source.day) throw new Error('Copy to a Day later than the source.')
+      if (targetDay < localDay()) throw new Error('Copy to Today or a future Day.')
+      return this.appendTask(userId, source.title, targetDay)
     })
+  }
+
+  private async appendTask(userId: string, title: string, day: string): Promise<TaskRecord> {
+    const tasks = await this.db.tasks.where('[userId+day]').equals([userId, day]).toArray()
+    const task: TaskRecord = {
+      id: uuidv7(),
+      userId,
+      day,
+      title,
+      completed: false,
+      orderKey: nextOrderKey(tasks.map((existing) => existing.orderKey)),
+      createdAt: new Date().toISOString(),
+      seq: 0,
+    }
+    const { userId: _userId, seq: _seq, ...changeTask } = task
+    await this.db.tasks.add(task)
+    await this.db.pending.add({ userId, id: uuidv7(), task: changeTask })
+    return task
+  }
+
+  async daysWithTasks(userId: string, firstDay: string, lastDay: string): Promise<string[]> {
+    const tasks = await this.db.tasks.where('[userId+day]').between(
+      [userId, firstDay], [userId, lastDay], true, true,
+    ).toArray()
+    return [...new Set(tasks.map(task => task.day))].sort()
   }
 
   async listTasks(userId: string, day: string): Promise<TaskRecord[]> {
