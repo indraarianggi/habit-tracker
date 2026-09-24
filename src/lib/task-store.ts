@@ -97,6 +97,16 @@ export class TaskStore {
       left.orderKey < right.orderKey ? -1 : left.orderKey > right.orderKey ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
     )
   }
+  async eligibleCheckinTasks(userId: string, today: string): Promise<TaskRecord[]> {
+    const tasks = await this.db.tasks.where('[userId+day]').between(
+      [userId, '0000-00-00'], [userId, today], true, true,
+    ).toArray()
+    return tasks.sort((left, right) =>
+      left.day > right.day ? -1 : left.day < right.day ? 1 :
+        left.orderKey < right.orderKey ? -1 : left.orderKey > right.orderKey ? 1 : 0,
+    )
+  }
+
 
   private async saveEdit(userId: string, task: TaskRecord): Promise<void> {
     const { userId: _userId, seq: _seq, ...changeTask } = task

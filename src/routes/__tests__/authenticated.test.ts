@@ -59,6 +59,24 @@ test('each session opens only its own private Today on mobile', async ({ browser
   }
 })
 
+test('signed-in Today keeps Sign out available when initial Task sync fails', async ({ browser }) => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `offline-shell-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  const context = await browser.newContext({ viewport: { width: 375, height: 812 } })
+  try {
+    await context.addCookies(await helpers.getCookies({ userId: user.id, domain: '127.0.0.1' }))
+    const page = await context.newPage()
+    await page.route('**/api/sync/pull?*', route => route.abort())
+    await page.goto('/today')
+    await expect(page.getByText('Connect to the internet to load your data.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
+  } finally {
+    await context.close()
+    await helpers.deleteUser(user.id)
+  }
+})
+
 test('active sessions last seven days and renew no more than daily', async () => {
   const helpers = (await testAuth.$context).test
   const user = helpers.createUser({ email: `session-${crypto.randomUUID()}@invalid.test` })

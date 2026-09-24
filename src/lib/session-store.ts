@@ -1,14 +1,16 @@
 import Dexie, { type Table } from 'dexie'
 import { v7 as uuidv7 } from 'uuid'
-import type { CheckinRecord, SessionRecord } from '@/lib/session-contract'
+import { checkinChangeSchema, type CheckinChangeRequest, type CheckinRecord, type SessionRecord } from '@/lib/session-contract'
+import { localDay, taskRecordSchema, type TaskRecord } from '@/lib/task-contract'
 
 export type BreakState =
   | { phase: 'choice'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number }
   | { phase: 'running' | 'ended'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number; kind: 'short' | 'long'; durationMinutes: number; startedAt: string }
 type FocusState = { userId: string; session: SessionRecord | null; lastTaskId: string | null; sessionTaskTitle?: string; break?: BreakState | null }
 type PendingControl = { id?: number; userId: string; sessionId: string; action: 'pause' | 'resume'; at: string }
-type PendingFinish = { id?: number; userId: string; sessionId: string; outcome: 'finish' | 'save' | 'discard'; durationMinutes?: number }
-type PendingChange = PendingControl | PendingFinish
+type PendingFinish = { id?: number; userId: string; sessionId: string; outcome: 'finish' | 'save' | 'discard'; durationMinutes?: number; provisionalCheckinId?: string }
+type PendingCheckin = { id?: number; userId: string; change: CheckinChangeRequest }
+type PendingChange = PendingControl | PendingFinish | PendingCheckin
 export function elapsedFocusMs(session: SessionRecord, now = Date.now()): number {
   return Math.min(session.plannedMinutes * 60_000,
     session.elapsedMs + (session.segmentStartedAt ? Math.max(0, now - Date.parse(session.segmentStartedAt)) : 0))
@@ -17,6 +19,25 @@ export function elapsedFocusMs(session: SessionRecord, now = Date.now()): number
 export function remainingBreakSeconds(value: BreakState, now = Date.now()): number {
   if (value.phase !== 'running') return 0
   return Math.max(0, Math.ceil((Date.parse(value.startedAt) + value.durationMinutes * 60_000 - now) / 1000))
+}
+
+function checkinTarget(userId: string, task: TaskRecord, minutes: number): void {
+  if (task.userId !== userId) throw new Error('Task not found.')
+  if (!taskRecordSchema.shape.day.safeParse(task.day).success || task.day > localDay()) {
+    throw new Error('Choose a Task on Today or a past Day.')
+  }
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
+    throw new Error('Enter 1–480 whole focused minutes.')
+  }
+}
+
+function withPendingChanges(checkin: CheckinRecord, pending: PendingCheckin[]): CheckinRecord | null {
+  let result: CheckinRecord | null = checkin
+  for (const { change } of pending) {
+    if (change.action === 'delete') result = null
+    else if (change.action === 'edit') result = { ...checkin, taskId: change.taskId, durationMinutes: change.durationMinutes }
+  }
+  return result
 }
 
 
@@ -71,10 +92,12 @@ export class SessionStore {
       if (!session) throw new Error('Session has already ended.')
       const minutes = outcome === 'finish' ? session.plannedMinutes : durationMinutes
       if (outcome !== 'discard' && (!minutes || minutes < 1 || minutes > session.plannedMinutes)) throw new Error('No whole focused minute to save.')
+      let provisionalCheckinId: string | undefined
       if (outcome !== 'discard') {
-        await this.db.checkins.put({ id: uuidv7(), userId, taskId: session.taskId, durationMinutes: minutes!, origin: 'session', sourceSessionId: session.id, createdAt: now.toISOString() })
+        provisionalCheckinId = uuidv7()
+        await this.db.checkins.put({ id: provisionalCheckinId, userId, taskId: session.taskId, durationMinutes: minutes!, origin: 'session', sourceSessionId: session.id, createdAt: now.toISOString() })
       }
-      await this.db.pending.add({ userId, sessionId: session.id, outcome, ...(outcome === 'save' ? { durationMinutes: minutes } : {}) })
+      await this.db.pending.add({ userId, sessionId: session.id, outcome, provisionalCheckinId, ...(outcome === 'save' ? { durationMinutes: minutes } : {}) })
       await this.db.state.put({ userId, session: null, lastTaskId: session.taskId,
         break: outcome === 'finish' ? { phase: 'choice', taskId: session.taskId, taskTitle: state?.sessionTaskTitle || taskTitle, sourceSessionId: session.id, plannedMinutes: session.plannedMinutes } : null })
     })
@@ -107,8 +130,80 @@ export class SessionStore {
     })
   }
 
+  async createCheckin(userId: string, task: TaskRecord, minutes: number): Promise<CheckinRecord> {
+    checkinTarget(userId, task, minutes)
+    const record: CheckinRecord = {
+      id: uuidv7(), userId, taskId: task.id, durationMinutes: minutes,
+      origin: 'manual', sourceSessionId: null, createdAt: new Date().toISOString(),
+    }
+    const change = checkinChangeSchema.parse({
+      id: uuidv7(), action: 'create', checkinId: record.id, taskId: task.id,
+      durationMinutes: minutes, createdAt: record.createdAt, today: localDay(),
+    })
+    await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
+      await this.db.checkins.add(record)
+      await this.db.pending.add({ userId, change })
+    })
+    return record
+  }
+
+  async editCheckin(userId: string, id: string, task: TaskRecord, minutes: number): Promise<void> {
+    checkinTarget(userId, task, minutes)
+    await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
+      const current = await this.db.checkins.get([userId, id])
+      if (!current) throw new Error('Check-in not found.')
+      if (current.taskId === task.id && current.durationMinutes === minutes) return
+      const change = checkinChangeSchema.parse({
+        id: uuidv7(), action: 'edit', checkinId: id, taskId: task.id,
+        durationMinutes: minutes, today: localDay(),
+      })
+      await this.db.checkins.put({ ...current, taskId: task.id, durationMinutes: minutes })
+      await this.db.pending.add({ userId, change })
+    })
+  }
+
+  async deleteCheckin(userId: string, id: string): Promise<void> {
+    await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
+      const current = await this.db.checkins.get([userId, id])
+      if (!current) throw new Error('Check-in not found.')
+      if (current.sourceSessionId) {
+        const finish = (await this.db.pending.where('userId').equals(userId).toArray())
+          .find((item): item is PendingFinish => 'outcome' in item && item.sessionId === current.sourceSessionId)
+        if (finish && !finish.provisionalCheckinId) {
+          await this.db.pending.put({ ...finish, provisionalCheckinId: id })
+        }
+      }
+      const change = checkinChangeSchema.parse({ id: uuidv7(), action: 'delete', checkinId: id, today: localDay() })
+      await this.db.checkins.delete([userId, id])
+      await this.db.pending.add({ userId, change })
+    })
+  }
+
   async pendingChanges(userId: string): Promise<PendingChange[]> {
     return this.db.pending.where('userId').equals(userId).sortBy('id')
+  }
+
+  async acceptCheckinChange(userId: string, id: number, checkin: CheckinRecord | null): Promise<void> {
+    await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
+      const accepted = await this.db.pending.get(id)
+      if (!accepted || accepted.userId !== userId || !('change' in accepted)) return
+      const originalId = accepted.change.checkinId
+      const later = (await this.db.pending.where('userId').equals(userId).sortBy('id'))
+        .filter((item): item is PendingCheckin => 'change' in item && item.id! > id && item.change.checkinId === originalId)
+      if (checkin && checkin.userId !== userId) throw new Error('Invalid Check-in receipt.')
+      if (checkin && checkin.id !== originalId) {
+        for (const item of later) await this.db.pending.put({ ...item, change: { ...item.change, checkinId: checkin.id } })
+      }
+      await this.db.checkins.delete([userId, originalId])
+      if (checkin) {
+        const visible = withPendingChanges(checkin, later)
+        if (visible) await this.db.checkins.put(visible)
+      } else {
+        // An accepted change replay can return null after another device deleted the record.
+        for (const item of later) await this.db.pending.delete(item.id!)
+      }
+      await this.db.pending.delete(id)
+    })
   }
 
   async acceptChange(userId: string, id: number): Promise<void> {
@@ -127,30 +222,54 @@ export class SessionStore {
         const nextSession = keepControl && state?.session && session && state.session.id === session.id ? state.session : session
         const nextLastTaskId = lastTaskId ?? state?.lastTaskId ?? null
         if (!state || state.session?.id !== nextSession?.id || state.session?.status !== nextSession?.status ||
-          state.session?.elapsedMs !== nextSession?.elapsedMs || state.session?.segmentStartedAt !== nextSession?.segmentStartedAt ||
+          state?.session?.elapsedMs !== nextSession?.elapsedMs || state?.session?.segmentStartedAt !== nextSession?.segmentStartedAt ||
           state.lastTaskId !== nextLastTaskId) {
           await this.db.state.put({ userId, session: nextSession, lastTaskId: nextLastTaskId,
             sessionTaskTitle: state?.session && state.session.id === nextSession?.id ? state.sessionTaskTitle : undefined,
             break: nextSession ? null : state?.break ?? null })
         }
       }
-      for (const checkin of checkins) {
-        if (checkin.userId !== userId) continue
-        const previous = await this.db.checkins.where('[userId+sourceSessionId]').equals([userId, checkin.sourceSessionId]).first()
-        if (previous?.id !== checkin.id || previous.taskId !== checkin.taskId ||
-          previous.durationMinutes !== checkin.durationMinutes || previous.createdAt !== checkin.createdAt) {
-          if (previous && previous.id !== checkin.id) await this.db.checkins.delete([userId, previous.id])
-          await this.db.checkins.put(checkin)
-        }
+      const pendingIds = new Set(pending.filter((item): item is PendingCheckin => 'change' in item).map(item => item.change.checkinId))
+      const pendingSessions = new Set(pending.filter((item): item is PendingFinish => 'outcome' in item).map(item => item.sessionId))
+      const remote = new Map(checkins.filter(item => item.userId === userId).map(item => [item.id, item]))
+      const local = await this.db.checkins.where('[userId+id]').between([userId, Dexie.minKey], [userId, Dexie.maxKey]).toArray()
+      const localById = new Map(local.map(item => [item.id, item]))
+      const localBySession = new Map(local.filter(item => item.sourceSessionId).map(item => [item.sourceSessionId!, item]))
+      for (const existing of local) {
+        if (pendingIds.has(existing.id) || existing.sourceSessionId && pendingSessions.has(existing.sourceSessionId)) continue
+        if (!remote.has(existing.id)) await this.db.checkins.delete([userId, existing.id])
+      }
+      for (const checkin of remote.values()) {
+        if (pendingIds.has(checkin.id) || checkin.sourceSessionId && pendingSessions.has(checkin.sourceSessionId)) continue
+        const previous = checkin.sourceSessionId ? localBySession.get(checkin.sourceSessionId) : undefined
+        if (previous && previous.id !== checkin.id) await this.db.checkins.delete([userId, previous.id])
+        const existing = localById.get(checkin.id)
+        if (!existing || existing.taskId !== checkin.taskId || existing.durationMinutes !== checkin.durationMinutes ||
+          existing.createdAt !== checkin.createdAt || existing.origin !== checkin.origin ||
+          existing.sourceSessionId !== checkin.sourceSessionId) await this.db.checkins.put(checkin)
       }
     })
   }
 
   async applyReceipt(userId: string, sessionId: string, checkin: CheckinRecord | null): Promise<void> {
-    await this.db.transaction('rw', this.db.state, this.db.checkins, async () => {
+    await this.db.transaction('rw', this.db.state, this.db.checkins, this.db.pending, async () => {
+      const pending = await this.db.pending.where('userId').equals(userId).sortBy('id')
+      const finish = pending.find((item): item is PendingFinish => 'outcome' in item && item.sessionId === sessionId)
       const provisional = await this.db.checkins.where('[userId+sourceSessionId]').equals([userId, sessionId]).first()
-      if (provisional) await this.db.checkins.delete([userId, provisional.id])
-      if (checkin) await this.db.checkins.put(checkin)
+      const provisionalId = finish?.provisionalCheckinId ?? provisional?.id
+      const corrections = pending.filter((item): item is PendingCheckin =>
+        'change' in item && item.change.checkinId === provisionalId)
+      if (provisionalId) await this.db.checkins.delete([userId, provisionalId])
+      if (checkin) {
+        if (checkin.userId !== userId || checkin.sourceSessionId !== sessionId) throw new Error('Invalid Session receipt.')
+        for (const correction of corrections) {
+          await this.db.pending.put({ ...correction, change: { ...correction.change, checkinId: checkin.id } })
+        }
+        const visible = withPendingChanges(checkin, corrections)
+        if (visible) await this.db.checkins.put(visible)
+      } else {
+        for (const correction of corrections) await this.db.pending.delete(correction.id!)
+      }
       const state = await this.db.state.get(userId)
       if (state?.break?.sourceSessionId === sessionId &&
         (!checkin || checkin.durationMinutes !== state.break.plannedMinutes)) {

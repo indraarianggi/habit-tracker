@@ -1,6 +1,7 @@
 import { v7 as uuidv7 } from 'uuid'
 import { checkinRecordSchema, sessionRecordSchema, type SessionRecord } from '@/lib/session-contract'
 import type { SessionStore } from '@/lib/session-store'
+import { localDay } from '@/lib/task-contract'
 
 const requestOptions = { credentials: 'same-origin' as const, cache: 'no-store' as const }
 
@@ -17,8 +18,26 @@ export async function startSession(taskId: string, day: string, fetcher: typeof 
 }
 
 export async function syncSession(store: SessionStore, userId: string, fetcher: typeof fetch = fetch): Promise<void> {
-  const changes = await store.pendingChanges(userId)
-  for (const change of changes) {
+  for (;;) {
+    const change = (await store.pendingChanges(userId))[0]
+    if (!change) break
+    if ('change' in change) {
+      const response = await fetcher('/api/checkin/change', {
+        ...requestOptions, method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...change.change, today: localDay() }),
+      })
+      if (response.status === 404 && change.change.action !== 'create') {
+        // A deletion on another device beats our pending correction.
+        await store.acceptCheckinChange(userId, change.id!, null)
+        continue
+      }
+      if (!response.ok) throw new Error(`Could not sync Check-in (${response.status}).`)
+      const body: unknown = await response.json()
+      if (!body || typeof body !== 'object' || !('checkin' in body)) throw new Error('Invalid Check-in response.')
+      const receipt = body.checkin === null ? null : checkinRecordSchema.parse(body.checkin)
+      await store.acceptCheckinChange(userId, change.id!, receipt)
+      continue
+    }
     const control = 'action' in change
     const response = await fetcher(control ? '/api/session/control' : '/api/session/finish', {
       ...requestOptions, method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -39,7 +58,6 @@ export async function syncSession(store: SessionStore, userId: string, fetcher: 
     }
     await store.acceptChange(userId, change.id!)
   }
-
   const response = await fetcher('/api/session', requestOptions)
   if (!response.ok) throw new Error(`Could not load focus (${response.status}).`)
   const body: unknown = await response.json()

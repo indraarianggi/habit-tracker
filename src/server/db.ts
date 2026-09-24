@@ -72,6 +72,38 @@ create table session_last_task (
 );
 `
 
+const checkinSchemaV4 = `
+create table session_checkin_v4 (
+  id text not null primary key,
+  userId text not null references "user" ("id") on delete cascade,
+  taskId text not null references task (id) on delete cascade,
+  durationMinutes integer not null check (durationMinutes between 1 and 480),
+  origin text not null check (origin in ('session', 'manual')),
+  sourceSessionId text unique references session_receipt (sessionId),
+  createdAt text not null,
+  check ((origin = 'session' and sourceSessionId is not null)
+    or (origin = 'manual' and sourceSessionId is null))
+);
+insert into session_checkin_v4
+  (id, userId, taskId, durationMinutes, origin, sourceSessionId, createdAt)
+  select id, userId, taskId, durationMinutes, origin, sourceSessionId, createdAt
+  from session_checkin;
+drop table session_checkin;
+alter table session_checkin_v4 rename to session_checkin;
+create index session_checkin_user_idx on session_checkin (userId, createdAt, id);
+create table checkin_change_receipt (
+  userId text not null references "user" ("id") on delete cascade,
+  id text not null,
+  request text not null,
+  checkinId text not null,
+  primary key (userId, id)
+);
+create table checkin_deletion (
+  checkinId text not null primary key,
+  userId text not null references "user" ("id") on delete cascade
+);
+`
+
 const databasePath = resolve(process.env.DATABASE_PATH || '.data/habit-tracker.sqlite')
 mkdirSync(dirname(databasePath), { recursive: true })
 export const database = new Database(databasePath)
@@ -79,9 +111,9 @@ database.pragma('journal_mode = WAL')
 database.pragma('foreign_keys = ON')
 
 const version = database.pragma('user_version', { simple: true }) as number
-if (version > 3) throw new Error(`Unsupported SQLite schema version ${version}`)
+if (version > 4) throw new Error(`Unsupported SQLite schema version ${version}`)
 
-if (version < 3) {
+if (version < 4) {
   database.transaction(() => {
     if (version < 1) {
       database.exec(authSchema)
@@ -91,7 +123,11 @@ if (version < 3) {
       database.exec(taskSchema)
       database.pragma('user_version = 2')
     }
-    database.exec(sessionSchema)
-    database.pragma('user_version = 3')
+    if (version < 3) {
+      database.exec(sessionSchema)
+      database.pragma('user_version = 3')
+    }
+    database.exec(checkinSchemaV4)
+    database.pragma('user_version = 4')
   })()
 }

@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { liveQuery } from 'dexie'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { authClient } from '@/auth-client'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -31,6 +31,19 @@ function dayDate(day: string): Date {
 function dayLabel(day: string): string {
   return new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'short' }).format(dayDate(day))
 }
+function CheckinRow({ checkin, task, onEdit }: { checkin: CheckinRecord; task: TaskRecord; onEdit: () => void }) {
+  return <div className="flex min-w-0 items-center justify-between gap-2 rounded-xl bg-surface-subtle px-2.5 py-2 text-left text-xs">
+    <div className="min-w-0">
+      <p className="break-words font-bold">{task.title}</p>
+      <p className="text-[10px] text-muted-foreground">{checkin.origin === 'session' ? 'Pomodoro' : 'Added by hand'}</p>
+    </div>
+    <div className="flex shrink-0 items-center gap-2">
+      <span className="font-bold text-mint-ink">{checkin.durationMinutes} min</span>
+      <button type="button" aria-label={`Edit Check-in for ${task.title}`} onClick={onEdit} className="min-h-9 rounded-lg px-1 text-[11px] font-bold text-muted-foreground focus-visible:outline-2 focus-visible:outline-mint">Edit</button>
+    </div>
+  </div>
+}
+
 export const Route = createFileRoute('/today')({ component: Today })
 
 function Today() {
@@ -63,6 +76,12 @@ function Today() {
   const lastTick = useRef(Date.now())
   const manuallySelected = useRef(false)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
+  const [eligibleTasks, setEligibleTasks] = useState<TaskRecord[]>([])
+  const [checkinEditor, setCheckinEditor] = useState<{ mode: 'add' } | { mode: 'edit'; id: string } | null>(null)
+  const [checkinTaskId, setCheckinTaskId] = useState('')
+  const [checkinMinutes, setCheckinMinutes] = useState('25')
+  const [checkinError, setCheckinError] = useState('')
+  const [confirmCheckinDelete, setConfirmCheckinDelete] = useState(false)
   const [ready, setReady] = useState(false)
   const [firstLoadError, setFirstLoadError] = useState(false)
   const [sessionError, setSessionError] = useState('')
@@ -101,6 +120,8 @@ function Today() {
   const clockText = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`
   const todayCheckins = focus.checkins.filter(checkin => tasks.some(task => task.id === checkin.taskId))
   const minutesForTask = (taskId: string) => todayCheckins.reduce((sum, checkin) => sum + (checkin.taskId === taskId ? checkin.durationMinutes : 0), 0)
+  const editingCheckin = checkinEditor?.mode === 'edit' ? focus.checkins.find(checkin => checkin.id === checkinEditor.id) : null
+  const selectedCheckinTask = eligibleTasks.find(task => task.id === checkinTaskId)
 
   useEffect(() => {
     const instance = new TaskStore()
@@ -166,6 +187,7 @@ function Today() {
     }
     syncingFocus.current = true
     try {
+      if (store && (await store.syncState(user.id)).pending) await syncTasks(store, user.id)
       await syncSession(focusStore, user.id)
       if (!focusReady.current) {
         setFocus(await focusStore.snapshot(user.id))
@@ -184,7 +206,7 @@ function Today() {
         void syncFocus()
       }
     }
-  }, [focusStore, user])
+  }, [focusStore, store, user])
 
   useEffect(() => {
     if (!focusStore || !user) return
@@ -468,6 +490,15 @@ function Today() {
   }, [store, user, displayedDay])
   useEffect(() => {
     if (!store || !user) return
+    const subscription = liveQuery(() => store.eligibleCheckinTasks(user.id, day)).subscribe({
+      next: setEligibleTasks,
+      error: () => setSyncError('Could not read eligible Tasks on this device.'),
+    })
+    return () => subscription.unsubscribe()
+  }, [store, user, day])
+
+  useEffect(() => {
+    if (!store || !user) return
     setWeekDays([])
     const subscription = liveQuery(() => store.daysWithTasks(user.id, weekStart, weekEnd)).subscribe({
       next: setWeekDays,
@@ -498,6 +529,49 @@ function Today() {
       setTitleError(reason instanceof Error ? reason.message : 'Could not save Task on this device.')
     }
   }
+  function openCheckin(checkin?: CheckinRecord) {
+    setCheckinEditor(checkin ? { mode: 'edit', id: checkin.id } : { mode: 'add' })
+    setCheckinTaskId(checkin?.taskId ?? (view === 'timer' ? selectedId : tasks[0]?.id) ?? eligibleTasks[0]?.id ?? '')
+    setCheckinMinutes(String(checkin?.durationMinutes ?? 25))
+    setCheckinError('')
+    setConfirmCheckinDelete(false)
+  }
+
+  async function submitCheckin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!focusStore || !user || !checkinEditor) return
+    const minutes = Number(checkinMinutes)
+    if (!selectedCheckinTask || selectedCheckinTask.day > localDay()) {
+      setCheckinError('Choose an existing Task from Today or a past Day.')
+      return
+    }
+    if (!/^\d+$/.test(checkinMinutes) || !Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
+      setCheckinError('Enter 1–480 whole focused minutes.')
+      return
+    }
+    try {
+      if (checkinEditor.mode === 'edit') await focusStore.editCheckin(user.id, checkinEditor.id, selectedCheckinTask, minutes)
+      else await focusStore.createCheckin(user.id, selectedCheckinTask, minutes)
+      setCheckinEditor(null)
+      setFocusError('')
+      void syncFocus()
+    } catch (reason) {
+      setCheckinError(reason instanceof Error ? reason.message : 'Could not save Check-in on this device.')
+    }
+  }
+
+  async function removeCheckin() {
+    if (!focusStore || !user || checkinEditor?.mode !== 'edit') return
+    try {
+      await focusStore.deleteCheckin(user.id, checkinEditor.id)
+      setCheckinEditor(null)
+      setFocusError('')
+      void syncFocus()
+    } catch (reason) {
+      setCheckinError(reason instanceof Error ? reason.message : 'Could not delete Check-in on this device.')
+    }
+  }
+
   function selectDay(value: string) {
     setSelectedDay(value)
     setTitle('')
@@ -576,10 +650,24 @@ function Today() {
     }
   }
 
+  const header = user && <header className="flex min-h-14 items-center justify-between px-5">
+    <span className="whitespace-nowrap text-[22px] font-bold tracking-tight">Habit Tracker</span>
+    <div className="flex items-center gap-2">
+      <Avatar className="size-[34px] border-[1.5px] border-mint bg-mint-surface" aria-label={`${user.name}'s profile`}>
+        {user.image && <AvatarImage src={user.image} alt="" referrerPolicy="no-referrer" />}
+        <AvatarFallback className="bg-mint-surface font-bold text-mint-ink">{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
+      </Avatar>
+      <Button variant="ghost" className="h-11 px-1 text-xs text-muted-foreground hover:text-foreground" type="button" onClick={() => void signOut()}>Sign out</Button>
+    </div>
+  </header>
+
   if (!user || !ready) {
     return (
-      <main className="mx-auto grid min-h-svh w-full max-w-[414px] place-items-center px-6">
-        <Card className="w-full items-center gap-5 rounded-[28px] px-6 py-9 text-center shadow-none">
+      <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
+        {header}
+        {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
+        <div className="grid flex-1 place-items-center px-6">
+          <Card className="w-full items-center gap-5 rounded-[28px] px-6 py-9 text-center shadow-none">
           <div className="grid size-[60px] place-items-center rounded-full border-[3px] border-mint bg-mint-surface text-mint">
             <RefreshCw size={28} aria-hidden="true" />
           </div>
@@ -591,23 +679,15 @@ function Today() {
               <Button className="mt-2 h-8 rounded-[10px] bg-amber px-4 text-xs font-bold text-white hover:bg-[#b45309]" onClick={() => user ? void sync() : void loadSession()}>Try again</Button>
             </div>
           )}
-        </Card>
+          </Card>
+        </div>
       </main>
     )
   }
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
-      <header className="flex min-h-14 items-center justify-between px-5">
-        <span className="whitespace-nowrap text-[22px] font-bold tracking-tight">Habit Tracker</span>
-        <div className="flex items-center gap-2">
-          <Avatar className="size-[34px] border-[1.5px] border-mint bg-mint-surface" aria-label={`${user.name}'s profile`}>
-            {user.image && <AvatarImage src={user.image} alt="" referrerPolicy="no-referrer" />}
-            <AvatarFallback className="bg-mint-surface font-bold text-mint-ink">{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
-          </Avatar>
-          <Button variant="ghost" className="h-11 px-1 text-xs text-muted-foreground hover:text-foreground" type="button" onClick={() => void signOut()}>Sign out</Button>
-        </div>
-      </header>
+      {header}
       {(pending > 0 || (syncError && (!navigator.onLine || failures.current >= 3))) && (
         <div className="flex justify-end px-5 pb-1">
           <button type="button" onClick={() => void sync()} className="rounded-full bg-amber-surface px-2 py-1 text-[11px] font-semibold text-amber">
@@ -701,12 +781,12 @@ function Today() {
         {focusError && <p role="alert" className="text-xs text-destructive">{focusError}</p>}
         <section aria-labelledby="today-focus-heading">
           <Card className="gap-2.5 rounded-[22px] p-4 shadow-none">
-            <h2 id="today-focus-heading" className="text-sm font-bold">Today's focus {todayCheckins.length > 0 && <span className="ml-1 rounded-full bg-mint-surface px-2 py-0.5 text-xs text-mint-ink">{todayCheckins.reduce((sum, checkin) => sum + checkin.durationMinutes, 0)}m</span>}</h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 id="today-focus-heading" className="text-sm font-bold">Today's focus {todayCheckins.length > 0 && <span className="ml-1 rounded-full bg-mint-surface px-2 py-0.5 text-xs text-mint-ink">{todayCheckins.reduce((sum, checkin) => sum + checkin.durationMinutes, 0)}m</span>}</h2>
+              <button type="button" aria-label="Add Check-in" onClick={() => openCheckin()} className="grid size-9 shrink-0 place-items-center rounded-full border border-border bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint"><Plus size={16} aria-hidden="true" /></button>
+            </div>
             {todayCheckins.length === 0 ? <p className="text-[13px] text-ink-tertiary">No focus recorded today yet.</p> : todayCheckins.map(checkin => (
-              <div key={checkin.id} className="flex items-center justify-between gap-2 rounded-xl bg-surface-subtle px-2.5 py-2 text-left text-xs">
-                <div className="min-w-0"><p className="break-words font-bold">{tasks.find(task => task.id === checkin.taskId)?.title}</p><p className="text-[10px] text-muted-foreground">Pomodoro</p></div>
-                <span className="shrink-0 font-bold text-mint-ink">{checkin.durationMinutes} min</span>
-              </div>
+              <CheckinRow key={checkin.id} checkin={checkin} task={tasks.find(task => task.id === checkin.taskId)!} onEdit={() => openCheckin(checkin)} />
             ))}
           </Card>
         </section>
@@ -749,6 +829,15 @@ function Today() {
           </ul>
           {tasks.length === 0 && <p className="py-3 text-center text-xs text-muted-foreground">{selectedDay > day ? 'No Tasks for this Day. Add one above to plan ahead.' : 'No Tasks for this Day.'}</p>}
         </section>
+        {selectedDay <= day && (tasks.length > 0 || todayCheckins.length > 0) && <section aria-label={`Check-ins for ${dayLabel(selectedDay)}`} className="flex flex-col gap-2 rounded-[22px] border border-border bg-card p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold">Check-ins</h2>
+            <button type="button" aria-label="Add Check-in" onClick={() => openCheckin()} className="grid size-9 place-items-center rounded-full border border-border bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint"><Plus size={16} aria-hidden="true" /></button>
+          </div>
+          {todayCheckins.length === 0 ? <p className="text-xs text-ink-tertiary">No focus recorded on this Day.</p> : todayCheckins.map(checkin => (
+            <CheckinRow key={checkin.id} checkin={checkin} task={tasks.find(task => task.id === checkin.taskId)!} onEdit={() => openCheckin(checkin)} />
+          ))}
+        </section>}
       </div>}
       <nav className="sticky bottom-0 flex min-h-[72px] items-center justify-around border-t border-border bg-card px-4 py-2 pb-[max(8px,env(safe-area-inset-bottom))]" aria-label="Main sections">
         <button type="button" onClick={() => setView('timer')} aria-current={view === 'timer' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'timer' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><Timer size={20} aria-hidden="true" />Timer</button>
@@ -782,6 +871,38 @@ function Today() {
             <button type="button" disabled={tasks.at(-1)?.id === menuTask.id} onClick={() => void changeTask(() => store!.moveTask(user.id, menuTask.id, 'down'))} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle disabled:opacity-35"><ArrowDown size={18} aria-hidden="true" />Move down</button>
             {!menuTask.completed && <button type="button" onClick={() => startCopy(menuTask)} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle"><ChevronRight size={18} aria-hidden="true" />Copy to a later Day →</button>}
             {actionError && <p role="alert" className="px-3 text-xs text-destructive">{actionError}</p>}
+          </div>}
+        </section>
+      </div>}
+      {checkinEditor && <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/35" onClick={() => setCheckinEditor(null)}>
+        <section role="dialog" aria-modal="true" aria-label={checkinEditor.mode === 'add' ? 'Add Check-in' : 'Edit Check-in'} onClick={event => event.stopPropagation()} className="max-h-[90svh] w-full max-w-[414px] overflow-y-auto rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">
+          <div className="mb-5 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-display text-lg font-bold">{checkinEditor.mode === 'add' ? 'Add Check-in' : 'Edit Check-in'}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">Focused time belongs to the selected Task's Day.</p>
+            </div>
+            <button type="button" aria-label="Close Check-in" onClick={() => setCheckinEditor(null)} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground"><X size={19} aria-hidden="true" /></button>
+          </div>
+          <form onSubmit={event => void submitCheckin(event)} className="flex flex-col gap-3">
+            <label htmlFor="checkin-task" className="text-xs font-semibold">Task</label>
+            <select id="checkin-task" aria-label="Task" required value={checkinTaskId} onChange={event => { setCheckinTaskId(event.target.value); setCheckinError('') }} className="min-h-11 w-full rounded-xl border border-border bg-card px-3 text-base outline-none focus:border-mint">
+              {!checkinTaskId && <option value="">Choose a Task</option>}
+              {eligibleTasks.map(task => <option key={task.id} value={task.id}>{task.title}{task.day !== day ? ` · ${dayLabel(task.day)}` : ''}</option>)}
+            </select>
+            {selectedCheckinTask && <p className="text-xs text-muted-foreground">Day: {dayLabel(selectedCheckinTask.day)} · {selectedCheckinTask.completed ? 'complete' : 'incomplete'} Task</p>}
+            {eligibleTasks.length === 0 && <p className="text-xs text-muted-foreground">Add a Task on Today first. Past Days only allow existing Tasks.</p>}
+            <label htmlFor="checkin-minutes" className="text-xs font-semibold">Focused minutes</label>
+            <input id="checkin-minutes" aria-label="Focused minutes" type="number" required min={1} max={480} step={1} value={checkinMinutes} onChange={event => { setCheckinMinutes(event.target.value); setCheckinError('') }} className="min-h-11 w-full rounded-xl border border-border bg-card px-3 text-base outline-none focus:border-mint" />
+            {checkinError && <p role="alert" className="text-xs text-destructive">{checkinError}</p>}
+            <Button type="submit" disabled={!selectedCheckinTask} className="min-h-11 rounded-xl bg-primary font-bold text-white">{checkinEditor.mode === 'add' ? 'Save Check-in' : 'Save changes'}</Button>
+          </form>
+          {editingCheckin && <div className="mt-3">
+            {!confirmCheckinDelete ? <Button type="button" variant="outline" onClick={() => setConfirmCheckinDelete(true)} className="min-h-11 w-full rounded-xl border-destructive font-semibold text-destructive hover:bg-destructive/5 hover:text-destructive focus-visible:border-destructive focus-visible:ring-destructive/20"><Trash2 size={16} aria-hidden="true" />Delete Check-in</Button>
+              : <div className="flex flex-col gap-2">
+                <p className="text-xs text-muted-foreground">Remove this focused time? Task completion and its Session will not change.</p>
+                <Button type="button" onClick={() => void removeCheckin()} variant="outline" className="min-h-11 w-full rounded-xl border-destructive text-destructive hover:bg-destructive/5 hover:text-destructive focus-visible:border-destructive focus-visible:ring-destructive/20">Confirm deletion</Button>
+                <button type="button" onClick={() => setConfirmCheckinDelete(false)} className="min-h-11 text-xs text-muted-foreground">Keep Check-in</button>
+              </div>}
           </div>}
         </section>
       </div>}

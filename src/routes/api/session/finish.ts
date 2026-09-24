@@ -29,7 +29,7 @@ const finalize = database.transaction((userId: string, input: FinishSessionReque
   if (prior) {
     if (prior.userId !== userId) return { error: 'Session not found', status: 404 }
     const checkin = prior.checkinId
-      ? checkinById.get(prior.checkinId, userId) as CheckinRecord
+      ? (checkinById.get(prior.checkinId, userId) as CheckinRecord | undefined) ?? null
       : null
     return { sessionId: prior.sessionId, outcome: prior.outcome, checkin }
   }
