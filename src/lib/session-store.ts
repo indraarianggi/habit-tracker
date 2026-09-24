@@ -2,13 +2,21 @@ import Dexie, { type Table } from 'dexie'
 import { v7 as uuidv7 } from 'uuid'
 import type { CheckinRecord, SessionRecord } from '@/lib/session-contract'
 
-type FocusState = { userId: string; session: SessionRecord | null; lastTaskId: string | null }
+export type BreakState =
+  | { phase: 'choice'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number }
+  | { phase: 'running' | 'ended'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number; kind: 'short' | 'long'; durationMinutes: number; startedAt: string }
+type FocusState = { userId: string; session: SessionRecord | null; lastTaskId: string | null; sessionTaskTitle?: string; break?: BreakState | null }
 type PendingControl = { id?: number; userId: string; sessionId: string; action: 'pause' | 'resume'; at: string }
 type PendingFinish = { id?: number; userId: string; sessionId: string; outcome: 'finish' | 'save' | 'discard'; durationMinutes?: number }
 type PendingChange = PendingControl | PendingFinish
 export function elapsedFocusMs(session: SessionRecord, now = Date.now()): number {
   return Math.min(session.plannedMinutes * 60_000,
     session.elapsedMs + (session.segmentStartedAt ? Math.max(0, now - Date.parse(session.segmentStartedAt)) : 0))
+}
+
+export function remainingBreakSeconds(value: BreakState, now = Date.now()): number {
+  if (value.phase !== 'running') return 0
+  return Math.max(0, Math.ceil((Date.parse(value.startedAt) + value.durationMinutes * 60_000 - now) / 1000))
 }
 
 
@@ -30,16 +38,16 @@ export class SessionStore {
     this.db = new FocusDatabase(name, indexedDB, IDBKeyRange)
   }
 
-  async snapshot(userId: string): Promise<{ session: SessionRecord | null; lastTaskId: string | null; checkins: CheckinRecord[] }> {
+  async snapshot(userId: string): Promise<{ session: SessionRecord | null; lastTaskId: string | null; break: BreakState | null; checkins: CheckinRecord[] }> {
     const [state, checkins] = await Promise.all([
       this.db.state.get(userId),
       this.db.checkins.where('[userId+id]').between([userId, Dexie.minKey], [userId, Dexie.maxKey]).toArray(),
     ])
-    return { session: state?.session ?? null, lastTaskId: state?.lastTaskId ?? null, checkins }
+    return { session: state?.session ?? null, lastTaskId: state?.lastTaskId ?? null, break: state?.break ?? null, checkins }
   }
 
-  async started(userId: string, session: SessionRecord): Promise<void> {
-    await this.db.state.put({ userId, session, lastTaskId: session.taskId })
+  async started(userId: string, session: SessionRecord, taskTitle = ''): Promise<void> {
+    await this.db.state.put({ userId, session, lastTaskId: session.taskId, sessionTaskTitle: taskTitle, break: null })
   }
 
   async control(userId: string, action: 'pause' | 'resume', now = new Date()): Promise<void> {
@@ -56,7 +64,7 @@ export class SessionStore {
     })
   }
 
-  async finish(userId: string, outcome: 'finish' | 'save' | 'discard', durationMinutes?: number, now = new Date()): Promise<void> {
+  async finish(userId: string, outcome: 'finish' | 'save' | 'discard', durationMinutes?: number, now = new Date(), taskTitle = ''): Promise<void> {
     await this.db.transaction('rw', this.db.state, this.db.checkins, this.db.pending, async () => {
       const state = await this.db.state.get(userId)
       const session = state?.session
@@ -67,7 +75,35 @@ export class SessionStore {
         await this.db.checkins.put({ id: uuidv7(), userId, taskId: session.taskId, durationMinutes: minutes!, origin: 'session', sourceSessionId: session.id, createdAt: now.toISOString() })
       }
       await this.db.pending.add({ userId, sessionId: session.id, outcome, ...(outcome === 'save' ? { durationMinutes: minutes } : {}) })
-      await this.db.state.put({ userId, session: null, lastTaskId: session.taskId })
+      await this.db.state.put({ userId, session: null, lastTaskId: session.taskId,
+        break: outcome === 'finish' ? { phase: 'choice', taskId: session.taskId, taskTitle: state?.sessionTaskTitle || taskTitle, sourceSessionId: session.id, plannedMinutes: session.plannedMinutes } : null })
+    })
+  }
+
+  async startBreak(userId: string, kind: 'short' | 'long', now = new Date()): Promise<void> {
+    await this.db.transaction('rw', this.db.state, async () => {
+      const state = await this.db.state.get(userId)
+      if (!state || state.session || state.break?.phase !== 'choice') throw new Error('Break choice is no longer available.')
+      await this.db.state.put({ ...state, break: {
+        phase: 'running', taskId: state.break.taskId, taskTitle: state.break.taskTitle, sourceSessionId: state.break.sourceSessionId, plannedMinutes: state.break.plannedMinutes,
+        kind, durationMinutes: kind === 'short' ? 5 : 15, startedAt: now.toISOString(),
+      } })
+    })
+  }
+
+  async endBreak(userId: string): Promise<void> {
+    await this.db.transaction('rw', this.db.state, async () => {
+      const state = await this.db.state.get(userId)
+      if (state?.break?.phase === 'running') {
+        await this.db.state.put({ ...state, break: { ...state.break, phase: 'ended' } })
+      }
+    })
+  }
+
+  async clearBreak(userId: string): Promise<void> {
+    await this.db.transaction('rw', this.db.state, async () => {
+      const state = await this.db.state.get(userId)
+      if (state?.break) await this.db.state.put({ ...state, break: null })
     })
   }
 
@@ -93,7 +129,9 @@ export class SessionStore {
         if (!state || state.session?.id !== nextSession?.id || state.session?.status !== nextSession?.status ||
           state.session?.elapsedMs !== nextSession?.elapsedMs || state.session?.segmentStartedAt !== nextSession?.segmentStartedAt ||
           state.lastTaskId !== nextLastTaskId) {
-          await this.db.state.put({ userId, session: nextSession, lastTaskId: nextLastTaskId })
+          await this.db.state.put({ userId, session: nextSession, lastTaskId: nextLastTaskId,
+            sessionTaskTitle: state?.session && state.session.id === nextSession?.id ? state.sessionTaskTitle : undefined,
+            break: nextSession ? null : state?.break ?? null })
         }
       }
       for (const checkin of checkins) {
@@ -109,10 +147,15 @@ export class SessionStore {
   }
 
   async applyReceipt(userId: string, sessionId: string, checkin: CheckinRecord | null): Promise<void> {
-    await this.db.transaction('rw', this.db.checkins, async () => {
+    await this.db.transaction('rw', this.db.state, this.db.checkins, async () => {
       const provisional = await this.db.checkins.where('[userId+sourceSessionId]').equals([userId, sessionId]).first()
       if (provisional) await this.db.checkins.delete([userId, provisional.id])
       if (checkin) await this.db.checkins.put(checkin)
+      const state = await this.db.state.get(userId)
+      if (state?.break?.sourceSessionId === sessionId &&
+        (!checkin || checkin.durationMinutes !== state.break.plannedMinutes)) {
+        await this.db.state.put({ ...state, break: null })
+      }
     })
   }
 

@@ -3,10 +3,9 @@ import { betterAuth } from 'better-auth'
 import { testUtils } from 'better-auth/plugins'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { v7 as uuidv7 } from 'uuid'
-import { elapsedFocusMs } from '@/lib/session-store'
+import { elapsedFocusMs, remainingBreakSeconds, SessionStore } from '@/lib/session-store'
 import { localDay } from '@/lib/task-contract'
 import { startSession, syncSession } from '@/lib/session-client'
-import { SessionStore } from '@/lib/session-store'
 import { TaskStore } from '@/lib/task-store'
 import { syncTasks } from '@/lib/task-sync'
 import { authOptions } from '@/server/auth'
@@ -112,10 +111,57 @@ test('two devices replace provisional outcomes with the first committed server r
     expect(onSecond.session).toBeNull()
     expect(onFirst.checkins).toEqual(onSecond.checkins)
     expect(onFirst.checkins).toMatchObject([{ sourceSessionId: saved.id, durationMinutes: 7 }])
+    const conflicted = await startSession(task.id, task.day, authorized)
+    await first.started(user.id, conflicted, task.title)
+    await syncSession(second, user.id, authorized)
+    await first.finish(user.id, 'finish')
+    expect((await first.snapshot(user.id)).break?.phase).toBe('choice')
+    await second.finish(user.id, 'discard')
+    await syncSession(second, user.id, authorized)
+    await syncSession(first, user.id, authorized)
+    expect((await first.snapshot(user.id)).break).toBeNull()
   } finally {
     first.close()
     second.close()
     tasks.close()
     await helpers.deleteUser(user.id)
+  }
+})
+
+test('break choices use wall-clock deadlines, can be skipped, and never add focused minutes', async () => {
+  const factory = new IDBFactory()
+  const focus = new SessionStore(`break-clock-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  const userId = crypto.randomUUID()
+  const sessionId = uuidv7()
+  const taskId = uuidv7()
+  const start = new Date('2026-09-24T12:00:00.000Z')
+  try {
+    await focus.started(userId, {
+      id: sessionId, userId, taskId, day: '2026-09-24', plannedMinutes: 25,
+      status: 'running', startedAt: start.toISOString(), elapsedMs: 0, segmentStartedAt: start.toISOString(),
+    })
+    await focus.finish(userId, 'finish', undefined, new Date(start.getTime() + 25 * 60_000), 'Restored Task')
+    expect((await focus.snapshot(userId)).break).toMatchObject({ phase: 'choice', taskId, taskTitle: 'Restored Task' })
+    await focus.startBreak(userId, 'short', new Date(start.getTime() + 26 * 60_000))
+    const running = (await focus.snapshot(userId)).break!
+    expect(running).toMatchObject({ phase: 'running', kind: 'short', taskId, durationMinutes: 5 })
+    expect(remainingBreakSeconds(running, start.getTime() + 30 * 60_000)).toBe(60)
+    expect(remainingBreakSeconds(running, start.getTime() + 35 * 60_000)).toBe(0)
+    await focus.endBreak(userId)
+    expect((await focus.snapshot(userId)).break?.phase).toBe('ended')
+    await focus.clearBreak(userId)
+    expect((await focus.snapshot(userId)).break).toBeNull()
+    expect((await focus.snapshot(userId)).checkins.map(checkin => checkin.durationMinutes)).toEqual([25])
+    await focus.started(userId, {
+      id: uuidv7(), userId, taskId, day: '2026-09-24', plannedMinutes: 25,
+      status: 'running', startedAt: start.toISOString(), elapsedMs: 0, segmentStartedAt: start.toISOString(),
+    })
+    await focus.finish(userId, 'finish')
+    await focus.startBreak(userId, 'long', start)
+    expect((await focus.snapshot(userId)).break).toMatchObject({ kind: 'long', durationMinutes: 15 })
+    await focus.clearBreak(userId)
+    expect((await focus.snapshot(userId)).break).toBeNull()
+  } finally {
+    focus.close()
   }
 })

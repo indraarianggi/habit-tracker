@@ -89,6 +89,7 @@ test('normal visible completion shows one dismissible focus-end alert', async ({
     await input.fill('Stay present')
     await input.press('Enter')
     await page.getByRole('button', { name: 'Start Session' }).click()
+    await expect(page.getByText('Focusing on Stay present')).toBeVisible()
     await page.clock.runFor(25 * 60_000)
     await expect(page.getByRole('alert', { name: 'Focus interval complete' })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'While you were away' })).toHaveCount(0)

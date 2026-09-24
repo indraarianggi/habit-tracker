@@ -9,7 +9,7 @@ import { Card } from '@/components/ui/card'
 import { localDay, type TaskRecord } from '@/lib/task-contract'
 import { chooseTimerTask, type CheckinRecord, type SessionRecord } from '@/lib/session-contract'
 import { startSession, syncSession } from '@/lib/session-client'
-import { elapsedFocusMs, SessionStore } from '@/lib/session-store'
+import { elapsedFocusMs, remainingBreakSeconds, SessionStore, type BreakState } from '@/lib/session-store'
 import { TaskStore } from '@/lib/task-store'
 import { syncTasks } from '@/lib/task-sync'
 
@@ -38,7 +38,7 @@ function Today() {
   const [user, setUser] = useState<TodayUser | null>(null)
   const [store, setStore] = useState<TaskStore | null>(null)
   const [focusStore, setFocusStore] = useState<SessionStore | null>(null)
-  const [focus, setFocus] = useState<{ session: SessionRecord | null; lastTaskId: string | null; checkins: CheckinRecord[] }>({ session: null, lastTaskId: null, checkins: [] })
+  const [focus, setFocus] = useState<{ session: SessionRecord | null; lastTaskId: string | null; break: BreakState | null; checkins: CheckinRecord[] }>({ session: null, lastTaskId: null, break: null, checkins: [] })
   const [focusLoaded, setFocusLoaded] = useState(false)
   const [connected, setConnected] = useState(true)
   const [focusError, setFocusError] = useState('')
@@ -47,6 +47,9 @@ function Today() {
   const [partialRecovery, setPartialRecovery] = useState(false)
   const [recoveryMinutes, setRecoveryMinutes] = useState('')
   const [focusEndMinutes, setFocusEndMinutes] = useState<number | null>(null)
+  const [wakeSupported, setWakeSupported] = useState(false)
+  const [wakeEnabled, setWakeEnabled] = useState(true)
+  const [visible, setVisible] = useState(true)
   const [resumeAfterCancel, setResumeAfterCancel] = useState(false)
   const [starting, setStarting] = useState(false)
   const [clockNow, setClockNow] = useState(Date.now)
@@ -55,6 +58,8 @@ function Today() {
   const focusReady = useRef(false)
   const finishingFocus = useRef(false)
   const observedRunning = useRef<string | null>(null)
+  const observedBreak = useRef<string | null>(null)
+  const audio = useRef<AudioContext | null>(null)
   const lastTick = useRef(Date.now())
   const manuallySelected = useRef(false)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
@@ -88,8 +93,11 @@ function Today() {
   const weekEnd = shiftDay(weekStart, 6)
   const unfinishedPast = selectedDay < day && tasks.some(task => !task.completed)
   const activeFocus = focus.session
+  const activeBreak = focus.break
   const elapsedMs = activeFocus ? elapsedFocusMs(activeFocus, clockNow) : 0
-  const remainingSeconds = Math.max(0, Math.ceil(((activeFocus?.plannedMinutes ?? 25) * 60_000 - elapsedMs) / 1000))
+  const remainingSeconds = activeFocus
+    ? Math.max(0, Math.ceil((activeFocus.plannedMinutes * 60_000 - elapsedMs) / 1000))
+    : activeBreak?.phase === 'running' ? remainingBreakSeconds(activeBreak, clockNow) : activeBreak ? 0 : 25 * 60
   const clockText = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`
   const todayCheckins = focus.checkins.filter(checkin => tasks.some(task => task.id === checkin.taskId))
   const minutesForTask = (taskId: string) => todayCheckins.reduce((sum, checkin) => sum + (checkin.taskId === taskId ? checkin.durationMinutes : 0), 0)
@@ -107,6 +115,48 @@ function Today() {
     setFocusStore(instance)
     return () => instance.close()
   }, [])
+
+  useEffect(() => {
+    setWakeSupported(typeof navigator.wakeLock?.request === 'function')
+    return () => { void audio.current?.close() }
+  }, [])
+
+  useEffect(() => {
+    if (!wakeSupported || !wakeEnabled || activeFocus?.status !== 'running' || !visible) return
+    let cancelled = false
+    let lock: WakeLockSentinel | null = null
+    void navigator.wakeLock.request('screen').then(sentinel => {
+      if (cancelled) void sentinel.release()
+      else lock = sentinel
+    }).catch(() => { /* Browser can deny Wake Lock; the timer remains accurate. */ })
+    return () => { cancelled = true; if (lock) void lock.release() }
+  }, [wakeSupported, wakeEnabled, activeFocus?.id, activeFocus?.status, visible])
+
+  function unlockAudio() {
+    if (!window.AudioContext) return
+    try {
+      audio.current ??= new AudioContext()
+      void audio.current.resume().catch(() => {})
+    } catch { /* Audio is optional when the platform refuses it. */ }
+  }
+
+  function playAlert(kind: 'focus' | 'break') {
+    const context = audio.current
+    if (!context || document.visibilityState !== 'visible') return
+    const start = context.currentTime
+    for (const [index, frequency] of (kind === 'focus' ? [660, 880] : [520, 390]).entries()) {
+      const oscillator = context.createOscillator()
+      const gain = context.createGain()
+      oscillator.type = 'sine'
+      oscillator.frequency.value = frequency
+      gain.gain.setValueAtTime(0.0001, start + index * 0.24)
+      gain.gain.exponentialRampToValueAtTime(0.12, start + index * 0.24 + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + index * 0.24 + 0.2)
+      oscillator.connect(gain).connect(context.destination)
+      oscillator.start(start + index * 0.24)
+      oscillator.stop(start + index * 0.24 + 0.21)
+    }
+  }
 
   const syncFocus = useCallback(async () => {
     if (!focusStore || !user || !navigator.onLine) return
@@ -145,7 +195,8 @@ function Today() {
     const online = () => { setConnected(true); void syncFocus() }
     const offline = () => setConnected(false)
     const foreground = () => {
-      if (document.visibilityState !== 'visible') observedRunning.current = null
+      if (document.visibilityState !== 'visible') { observedRunning.current = null; observedBreak.current = null }
+      setVisible(document.visibilityState === 'visible')
       setClockNow(Date.now())
       lastTick.current = Date.now()
       if (document.visibilityState === 'visible') void syncFocus()
@@ -155,7 +206,7 @@ function Today() {
     document.addEventListener('visibilitychange', foreground)
     const clock = window.setInterval(() => {
       const now = Date.now()
-      if (now - lastTick.current > 5000) observedRunning.current = null
+      if (now - lastTick.current > 5000) { observedRunning.current = null; observedBreak.current = null }
       lastTick.current = now
       setClockNow(now)
     }, 1000)
@@ -187,11 +238,13 @@ function Today() {
     if (!focusStore || !user || finishingFocus.current) return
     finishingFocus.current = true
     try {
-      await focusStore.finish(user.id, outcome, durationMinutes)
+      const source = activeFocus && (tasks.find(task => task.id === activeFocus.taskId)
+        ?? (await store?.listTasks(user.id, activeFocus.day).catch(() => []))?.find(task => task.id === activeFocus.taskId))
+      await focusStore.finish(user.id, outcome, durationMinutes, new Date(), source?.title ?? '')
       setStopMinutes(null)
       setAwaySessionId(null)
       setPartialRecovery(false)
-      if (alertOnFinish) setFocusEndMinutes(focus.session?.plannedMinutes ?? null)
+      if (alertOnFinish) { setFocusEndMinutes(focus.session?.plannedMinutes ?? null); playAlert('focus') }
       setFocusError('')
       void syncFocus()
     } catch (reason) {
@@ -215,15 +268,54 @@ function Today() {
     }
   }, [activeFocus, elapsedMs, focusStore, user, focusLoaded, connected])
 
-  async function beginFocus() {
-    const selected = tasks.find(task => task.id === selectedId)
-    if (!store || !focusStore || !user || !selected || selected.day !== localDay() || !connected || starting) return
+  useEffect(() => {
+    if (activeBreak?.phase !== 'running' || !focusStore || !user) return
+    if (remainingBreakSeconds(activeBreak, clockNow) > 0) {
+      if (document.visibilityState === 'visible') observedBreak.current = activeBreak.sourceSessionId
+    } else {
+      if (observedBreak.current === activeBreak.sourceSessionId) playAlert('break')
+      observedBreak.current = null
+      void focusStore.endBreak(user.id).catch(() => setFocusError('Could not end Break on this device.'))
+    }
+  }, [activeBreak, clockNow, focusStore, user])
+
+  async function chooseBreak(kind: 'short' | 'long') {
+    if (!focusStore || !user) return
+    unlockAudio()
+    try {
+      await focusStore.startBreak(user.id, kind)
+      setClockNow(Date.now())
+      setFocusEndMinutes(null)
+      setFocusError('')
+    } catch (reason) {
+      setFocusError(reason instanceof Error ? reason.message : 'Could not start Break.')
+    }
+  }
+
+  async function skipBreak() {
+    if (!focusStore || !user) return
+    try {
+      await focusStore.clearBreak(user.id)
+      setFocusEndMinutes(null)
+      setFocusError('')
+    } catch (reason) {
+      setFocusError(reason instanceof Error ? reason.message : 'Could not skip Break.')
+    }
+  }
+
+  async function beginFocus(preferredTaskId?: string) {
+    const eligible = tasks.filter(task => task.day === localDay())
+    const selected = eligible.find(task => task.id === (preferredTaskId ?? selectedId))
+      ?? (preferredTaskId ? chooseTimerTask(eligible, null) : null)
+    if (!store || !focusStore || !user || !selected || !connected || starting) return
+    unlockAudio()
     setStarting(true)
     try {
       await syncTasks(store, user.id)
       const session = await startSession(selected.id, localDay())
-      await focusStore.started(user.id, session)
+      await focusStore.started(user.id, session, selected.title)
       observedRunning.current = session.id
+      setSelectedId(selected.id)
       setFocusEndMinutes(null)
       setClockNow(Date.now())
       setFocusError('')
@@ -237,6 +329,7 @@ function Today() {
 
   async function toggleFocus() {
     if (!focusStore || !user || !activeFocus) return
+    unlockAudio()
     try {
       await focusStore.control(user.id, activeFocus.status === 'running' ? 'pause' : 'resume')
       setClockNow(Date.now())
@@ -527,18 +620,21 @@ function Today() {
         <span>Focus interval complete · {focusEndMinutes} min recorded</span>
         <button type="button" aria-label="Dismiss focus alert" onClick={() => setFocusEndMinutes(null)} className="grid size-9 shrink-0 place-items-center rounded-lg focus-visible:outline-2 focus-visible:outline-mint"><X size={17} aria-hidden="true" /></button>
       </div>}
+      {activeBreak?.phase === 'ended' && <div role="alert" aria-label="Break is over!" className="mx-5 rounded-2xl border border-sky bg-sky-surface px-4 py-3 text-sm font-semibold text-sky">
+        Break is over! Choose when to start your next Session.
+      </div>}
       <h1 className="sr-only">{view === 'tasks' ? 'Tasks' : 'Today'}</h1>
       {view === 'timer' ? <div className="flex flex-1 flex-col gap-4 px-5 py-5">
         <section aria-labelledby="timer-heading">
           <Card className="items-center gap-4 rounded-[26px] px-5 py-5 text-center shadow-none">
             <div className="relative grid size-[220px] shrink-0 place-items-center">
               <svg viewBox="0 0 220 220" className="absolute inset-0 size-full -rotate-90" aria-hidden="true">
-                <circle cx="110" cy="110" r="95" fill="none" stroke="#e2f5eb" strokeWidth="12" />
-                <circle cx="110" cy="110" r="95" fill="none" stroke="#2da46f" strokeWidth="12" strokeLinecap="round" strokeDasharray={2 * Math.PI * 95} strokeDashoffset={2 * Math.PI * 95 * (activeFocus ? elapsedMs / (activeFocus.plannedMinutes * 60_000) : 0)} />
+                <circle cx="110" cy="110" r="95" fill="none" stroke={activeBreak ? '#e5f0fd' : '#e2f5eb'} strokeWidth="12" />
+                <circle cx="110" cy="110" r="95" fill="none" stroke={activeBreak ? '#3282e6' : '#2da46f'} strokeWidth="12" strokeLinecap="round" strokeDasharray={2 * Math.PI * 95} strokeDashoffset={2 * Math.PI * 95 * (activeFocus ? elapsedMs / (activeFocus.plannedMinutes * 60_000) : activeBreak?.phase === 'running' ? 1 - remainingSeconds / (activeBreak.durationMinutes * 60) : 0)} />
               </svg>
               <div className="flex flex-col items-center gap-1">
                 <span className="font-display text-[48px] font-extrabold leading-none tracking-[-.05em] tabular-nums" aria-live="off">{clockText}</span>
-                <span className="text-xs font-semibold text-muted-foreground">{activeFocus?.status === 'paused' ? 'Paused' : 'Focus time'}</span>
+                <span className="text-xs font-semibold text-muted-foreground">{activeFocus?.status === 'paused' ? 'Paused' : activeBreak ? 'Break time' : 'Focus time'}</span>
               </div>
             </div>
             {activeFocus ? <>
@@ -550,6 +646,22 @@ function Today() {
                 </Button>
                 <Button type="button" variant="outline" onClick={() => void stopFocus()} className="min-h-12 rounded-[18px] px-5 font-bold">Stop</Button>
               </div>
+            </> : activeBreak ? <>
+              <h2 id="timer-heading" className="max-w-full break-words text-base font-bold">
+                {activeBreak.phase === 'choice' ? `Take a break after ${activeBreak.taskTitle || tasks.find(task => task.id === activeBreak.taskId)?.title || 'your Task'}`
+                  : activeBreak.phase === 'ended' ? 'Break is over!'
+                    : `On a ${activeBreak.kind} Break from ${activeBreak.taskTitle || tasks.find(task => task.id === activeBreak.taskId)?.title || 'your Task'}`}
+              </h2>
+              {activeBreak.phase === 'choice' ? <div className="flex w-full flex-col gap-2">
+                <Button type="button" onClick={() => void chooseBreak('short')} className="min-h-12 rounded-[18px] bg-primary font-bold text-white">Short Break · 5 min</Button>
+                <Button type="button" variant="outline" onClick={() => void chooseBreak('long')} className="min-h-12 rounded-[18px] font-bold">Long Break · 15 min</Button>
+                <button type="button" onClick={() => void skipBreak()} className="min-h-11 text-sm font-semibold text-muted-foreground">No Break</button>
+              </div> : activeBreak.phase === 'running' ? <Button type="button" variant="outline" onClick={() => void skipBreak()} className="min-h-12 w-full rounded-[18px] font-bold">Skip Break</Button>
+                : <div className="flex w-full flex-col gap-2">
+                  <Button type="button" disabled={!connected || !focusLoaded || starting || !tasks.some(task => task.day === localDay())} onClick={() => void beginFocus(activeBreak.taskId)} className="min-h-12 rounded-[18px] bg-primary font-bold text-white"><Play size={16} aria-hidden="true" />Start Next Session</Button>
+                  {!connected && <p role="status" className="text-xs text-amber">Connect to the internet to start a session.</p>}
+                  <button type="button" onClick={() => void skipBreak()} className="min-h-11 text-sm font-semibold text-muted-foreground">Dismiss Break</button>
+                </div>}
             </> : tasks.length === 0 ? <>
               <h2 id="timer-heading" className="text-base font-bold">What will you focus on today?</h2>
               <p className="text-xs leading-relaxed text-muted-foreground">Add a task below to start your focus session.</p>
@@ -561,8 +673,14 @@ function Today() {
               {!connected && <p role="status" className="text-xs font-semibold text-amber">Connect to the internet to start a session.</p>}
             </>}
           </Card>
+          <div className="flex items-center justify-between gap-3 px-2 pt-3 text-xs text-muted-foreground">
+            <span>Keep screen awake</span>
+            <button type="button" aria-label="Keep screen awake" aria-pressed={wakeSupported ? wakeEnabled : undefined} disabled={!wakeSupported} onClick={() => setWakeEnabled(value => !value)} className="min-h-10 rounded-xl border border-border px-3 font-semibold text-foreground disabled:cursor-not-allowed disabled:opacity-55">
+              {wakeSupported ? wakeEnabled ? 'On' : 'Off' : 'Not supported on this device'}
+            </button>
+          </div>
         </section>
-        {!activeFocus && <section aria-labelledby="task-list-heading" className="flex flex-col gap-2">
+        {!activeFocus && !activeBreak && <section aria-labelledby="task-list-heading" className="flex flex-col gap-2">
           <h2 id="task-list-heading" className="text-[13px] font-bold text-muted-foreground">Focus on</h2>
           <form onSubmit={event => void addTask(event)}>
             <div className="flex min-h-[42px] items-center gap-2 rounded-[14px] border border-border bg-card px-3 text-sm focus-within:border-mint">
