@@ -1,12 +1,15 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { liveQuery } from 'dexie'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pencil, Plus, RefreshCw, SquareCheck, Timer, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { authClient } from '@/auth-client'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { localDay, type TaskRecord } from '@/lib/task-contract'
+import { chooseTimerTask, type CheckinRecord, type SessionRecord } from '@/lib/session-contract'
+import { startSession, syncSession } from '@/lib/session-client'
+import { elapsedFocusMs, SessionStore } from '@/lib/session-store'
 import { TaskStore } from '@/lib/task-store'
 import { syncTasks } from '@/lib/task-sync'
 
@@ -34,6 +37,20 @@ function Today() {
   const navigate = useNavigate()
   const [user, setUser] = useState<TodayUser | null>(null)
   const [store, setStore] = useState<TaskStore | null>(null)
+  const [focusStore, setFocusStore] = useState<SessionStore | null>(null)
+  const [focus, setFocus] = useState<{ session: SessionRecord | null; lastTaskId: string | null; checkins: CheckinRecord[] }>({ session: null, lastTaskId: null, checkins: [] })
+  const [focusLoaded, setFocusLoaded] = useState(false)
+  const [connected, setConnected] = useState(true)
+  const [focusError, setFocusError] = useState('')
+  const [stopMinutes, setStopMinutes] = useState<number | null>(null)
+  const [resumeAfterCancel, setResumeAfterCancel] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [clockNow, setClockNow] = useState(Date.now)
+  const syncingFocus = useRef(false)
+  const rerunFocus = useRef(false)
+  const finishingFocus = useRef(false)
+  const observedRunning = useRef<string | null>(null)
+  const manuallySelected = useRef(false)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [ready, setReady] = useState(false)
   const [firstLoadError, setFirstLoadError] = useState(false)
@@ -64,6 +81,12 @@ function Today() {
   const weekStart = shiftDay(selectedDay, -((dayDate(selectedDay).getDay() + 6) % 7))
   const weekEnd = shiftDay(weekStart, 6)
   const unfinishedPast = selectedDay < day && tasks.some(task => !task.completed)
+  const activeFocus = focus.session
+  const elapsedMs = activeFocus ? elapsedFocusMs(activeFocus, clockNow) : 0
+  const remainingSeconds = Math.max(0, Math.ceil(((activeFocus?.plannedMinutes ?? 25) * 60_000 - elapsedMs) / 1000))
+  const clockText = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`
+  const todayCheckins = focus.checkins.filter(checkin => tasks.some(task => task.id === checkin.taskId))
+  const minutesForTask = (taskId: string) => todayCheckins.reduce((sum, checkin) => sum + (checkin.taskId === taskId ? checkin.durationMinutes : 0), 0)
 
   useEffect(() => {
     const instance = new TaskStore()
@@ -73,6 +96,145 @@ function Today() {
       instance.close()
     }
   }, [])
+  useEffect(() => {
+    const instance = new SessionStore()
+    setFocusStore(instance)
+    return () => instance.close()
+  }, [])
+
+  const syncFocus = useCallback(async () => {
+    if (!focusStore || !user || !navigator.onLine) return
+    if (syncingFocus.current) {
+      rerunFocus.current = true
+      return
+    }
+    syncingFocus.current = true
+    try {
+      await syncSession(focusStore, user.id)
+      setConnected(true)
+      setFocusLoaded(true)
+      setFocusError('')
+    } catch (reason) {
+      setConnected(false)
+      setFocusError(reason instanceof Error ? reason.message : 'Could not sync focus.')
+    } finally {
+      syncingFocus.current = false
+      if (rerunFocus.current) {
+        rerunFocus.current = false
+        void syncFocus()
+      }
+    }
+  }, [focusStore, user])
+
+  useEffect(() => {
+    if (!focusStore || !user) return
+    const subscription = liveQuery(() => focusStore.snapshot(user.id)).subscribe({
+      next: setFocus,
+      error: () => setFocusError('Could not read focus on this device.'),
+    })
+    const online = () => { setConnected(true); void syncFocus() }
+    const offline = () => setConnected(false)
+    window.addEventListener('online', online)
+    window.addEventListener('offline', offline)
+    const clock = window.setInterval(() => setClockNow(Date.now()), 1000)
+    const poll = window.setInterval(() => { if (navigator.onLine) void syncFocus() }, 5000)
+    setConnected(navigator.onLine)
+    void syncFocus()
+    return () => {
+      subscription.unsubscribe()
+      window.clearInterval(clock)
+      window.clearInterval(poll)
+      window.removeEventListener('online', online)
+      window.removeEventListener('offline', offline)
+    }
+  }, [focusStore, user, syncFocus])
+
+  useEffect(() => {
+    if (view !== 'timer') return
+    if (!tasks.length) {
+      setSelectedId(null)
+      manuallySelected.current = false
+    } else {
+      setSelectedId(current => manuallySelected.current && tasks.some(task => task.id === current)
+        ? current : chooseTimerTask(tasks, focus.lastTaskId)?.id ?? null)
+    }
+  }, [view, tasks, focus.lastTaskId])
+
+  async function finishFocus(outcome: 'finish' | 'save' | 'discard', durationMinutes?: number) {
+    if (!focusStore || !user || finishingFocus.current) return
+    finishingFocus.current = true
+    try {
+      await focusStore.finish(user.id, outcome, durationMinutes)
+      setStopMinutes(null)
+      setFocusError('')
+      void syncFocus()
+    } catch (reason) {
+      setFocusError(reason instanceof Error ? reason.message : 'Could not finish focus on this device.')
+    } finally {
+      finishingFocus.current = false
+    }
+  }
+
+  useEffect(() => {
+    if (!activeFocus || activeFocus.status !== 'running' || !focusStore || !user) return
+    if (elapsedMs < activeFocus.plannedMinutes * 60_000) {
+      observedRunning.current = activeFocus.id
+    } else if (observedRunning.current === activeFocus.id && document.visibilityState === 'visible') {
+      observedRunning.current = null
+      void finishFocus('finish')
+    }
+  }, [activeFocus, elapsedMs, focusStore, user])
+
+  async function beginFocus() {
+    const selected = tasks.find(task => task.id === selectedId)
+    if (!store || !focusStore || !user || !selected || selected.day !== localDay() || !connected || starting) return
+    setStarting(true)
+    try {
+      await syncTasks(store, user.id)
+      const session = await startSession(selected.id, localDay())
+      await focusStore.started(user.id, session)
+      observedRunning.current = session.id
+      setClockNow(Date.now())
+      setFocusError('')
+    } catch (reason) {
+      setFocusError(reason instanceof Error ? reason.message : 'Could not start a Session.')
+      void syncFocus()
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  async function toggleFocus() {
+    if (!focusStore || !user || !activeFocus) return
+    try {
+      await focusStore.control(user.id, activeFocus.status === 'running' ? 'pause' : 'resume')
+      setClockNow(Date.now())
+      void syncFocus()
+    } catch (reason) {
+      setFocusError(reason instanceof Error ? reason.message : 'Could not control focus.')
+    }
+  }
+
+  async function stopFocus() {
+    if (!focusStore || !user || !activeFocus) return
+    try {
+      if (elapsedMs >= activeFocus.plannedMinutes * 60_000) {
+        await finishFocus('finish')
+        return
+      }
+      const minutes = Math.floor(elapsedMs / 60_000)
+      const wasRunning = activeFocus.status === 'running'
+      if (wasRunning) {
+        await focusStore.control(user.id, 'pause')
+        void syncFocus()
+      }
+      setResumeAfterCancel(wasRunning)
+      if (minutes < 1) await finishFocus('discard')
+      else setStopMinutes(minutes)
+    } catch (reason) {
+      setFocusError(reason instanceof Error ? reason.message : 'Could not stop focus on this device.')
+    }
+  }
 
   const loadSession = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -205,7 +367,7 @@ function Today() {
       const task = await store.createTask(user.id, title, displayedDay)
       setTitle('')
       setTitleError('')
-      if (displayedDay === localDay()) setSelectedId(task.id)
+      if (displayedDay === localDay()) { manuallySelected.current = true; setSelectedId(task.id) }
       await refreshPending()
       void sync()
     } catch (reason) {
@@ -331,20 +493,41 @@ function Today() {
       )}
       {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
       <h1 className="sr-only">{view === 'tasks' ? 'Tasks' : 'Today'}</h1>
-      {view === 'timer' ? <div className="flex flex-1 flex-col justify-center gap-4 px-5 py-6">
+      {view === 'timer' ? <div className="flex flex-1 flex-col gap-4 px-5 py-5">
         <section aria-labelledby="timer-heading">
-          <Card className="items-center gap-3 rounded-[26px] px-5 py-6 text-center shadow-none">
-            <span className="font-sans text-[56px] leading-none font-bold tracking-[-.035em] text-foreground tabular-nums" aria-label="Default focus interval: 25 minutes">25:00</span>
-            {tasks.length === 0 ? <>
+          <Card className="items-center gap-4 rounded-[26px] px-5 py-5 text-center shadow-none">
+            <div className="relative grid size-[220px] shrink-0 place-items-center">
+              <svg viewBox="0 0 220 220" className="absolute inset-0 size-full -rotate-90" aria-hidden="true">
+                <circle cx="110" cy="110" r="95" fill="none" stroke="#e2f5eb" strokeWidth="12" />
+                <circle cx="110" cy="110" r="95" fill="none" stroke="#2da46f" strokeWidth="12" strokeLinecap="round" strokeDasharray={2 * Math.PI * 95} strokeDashoffset={2 * Math.PI * 95 * (activeFocus ? elapsedMs / (activeFocus.plannedMinutes * 60_000) : 0)} />
+              </svg>
+              <div className="flex flex-col items-center gap-1">
+                <span className="font-display text-[48px] font-extrabold leading-none tracking-[-.05em] tabular-nums" aria-live="off">{clockText}</span>
+                <span className="text-xs font-semibold text-muted-foreground">{activeFocus?.status === 'paused' ? 'Paused' : 'Focus time'}</span>
+              </div>
+            </div>
+            {activeFocus ? <>
+              <h2 id="timer-heading" className="max-w-full break-words text-base font-bold">Focusing on {tasks.find(task => task.id === activeFocus.taskId)?.title ?? 'your Task'}</h2>
+              <div className="flex w-full gap-2">
+                <Button type="button" onClick={() => void toggleFocus()} className="min-h-12 flex-1 rounded-[18px] bg-primary font-bold text-white">
+                  {activeFocus.status === 'paused' ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
+                  {activeFocus.status === 'paused' ? 'Resume Session' : 'Pause Session'}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => void stopFocus()} className="min-h-12 rounded-[18px] px-5 font-bold">Stop</Button>
+              </div>
+            </> : tasks.length === 0 ? <>
               <h2 id="timer-heading" className="text-base font-bold">What will you focus on today?</h2>
-              <p className="text-xs leading-relaxed text-muted-foreground">Focus sessions start with a Task.</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">Add a task below to start your focus session.</p>
             </> : <>
               <h2 id="timer-heading" className="sr-only">Today’s timer</h2>
-              <Button type="button" disabled className="w-full rounded-[18px]">Start Session</Button>
+              <Button type="button" onClick={() => void beginFocus()} disabled={!connected || !focusLoaded || !selectedId || starting} className="min-h-12 w-full rounded-[18px] bg-primary text-[15px] font-bold text-white">
+                <Play size={16} aria-hidden="true" /> Start Session
+              </Button>
+              {!connected && <p role="status" className="text-xs font-semibold text-amber">Connect to the internet to start a session.</p>}
             </>}
           </Card>
         </section>
-        <section aria-labelledby="task-list-heading" className="flex flex-col gap-2">
+        {!activeFocus && <section aria-labelledby="task-list-heading" className="flex flex-col gap-2">
           <h2 id="task-list-heading" className="text-[13px] font-bold text-muted-foreground">Focus on</h2>
           <form onSubmit={event => void addTask(event)}>
             <div className="flex min-h-[42px] items-center gap-2 rounded-[14px] border border-border bg-card px-3 text-sm focus-within:border-mint">
@@ -353,16 +536,25 @@ function Today() {
             </div>
             {titleError && <p id="task-title-error" role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
           </form>
-          {tasks.map(task => <button type="button" key={task.id} onClick={() => setSelectedId(task.id)} aria-label={`${task.title}, ${task.completed ? 'complete' : 'open'}, 0 focused minutes`} aria-pressed={selectedId === task.id} className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-2xl border bg-card px-3.5 py-2.5 text-left text-[13px] font-semibold ${selectedId === task.id ? 'border-mint' : 'border-border'}`}>
-            <span className={`size-[18px] shrink-0 rounded-full border-2 ${selectedId === task.id ? 'grid place-items-center border-mint' : 'border-border'}`}>{selectedId === task.id && <span className="size-2 rounded-full bg-mint" />}</span>
-            <span className={`min-w-0 flex-1 break-words ${task.completed ? 'text-muted-foreground line-through' : ''}`}>{task.title}</span>
-            <span className="shrink-0 text-[11px] font-medium text-ink-tertiary">No focus</span>
-          </button>)}
-        </section>
+          {tasks.map(task => {
+            const minutes = minutesForTask(task.id)
+            return <button type="button" key={task.id} onClick={() => { manuallySelected.current = true; setSelectedId(task.id) }} aria-label={`${task.title}, ${task.completed ? 'complete' : 'open'}, ${minutes} focused minutes`} aria-pressed={selectedId === task.id} className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-2xl border bg-card px-3.5 py-2.5 text-left text-[13px] font-semibold ${selectedId === task.id ? 'border-mint' : 'border-border'}`}>
+              <span className={`size-[18px] shrink-0 rounded-full border-2 ${selectedId === task.id ? 'grid place-items-center border-mint' : 'border-border'}`}>{selectedId === task.id && <span className="size-2 rounded-full bg-mint" />}</span>
+              <span className={`min-w-0 flex-1 break-words ${task.completed ? 'text-muted-foreground line-through' : ''}`}>{task.title}</span>
+              <span className="shrink-0 text-[11px] font-medium text-ink-tertiary">{minutes ? `${minutes}m` : 'No focus'}</span>
+            </button>
+          })}
+        </section>}
+        {focusError && <p role="alert" className="text-xs text-destructive">{focusError}</p>}
         <section aria-labelledby="today-focus-heading">
           <Card className="gap-2.5 rounded-[22px] p-4 shadow-none">
-            <h2 id="today-focus-heading" className="text-sm font-bold">Today's focus</h2>
-            <p className="text-[13px] text-ink-tertiary">No focus recorded today yet.</p>
+            <h2 id="today-focus-heading" className="text-sm font-bold">Today's focus {todayCheckins.length > 0 && <span className="ml-1 rounded-full bg-mint-surface px-2 py-0.5 text-xs text-mint-ink">{todayCheckins.reduce((sum, checkin) => sum + checkin.durationMinutes, 0)}m</span>}</h2>
+            {todayCheckins.length === 0 ? <p className="text-[13px] text-ink-tertiary">No focus recorded today yet.</p> : todayCheckins.map(checkin => (
+              <div key={checkin.id} className="flex items-center justify-between gap-2 rounded-xl bg-surface-subtle px-2.5 py-2 text-left text-xs">
+                <div className="min-w-0"><p className="break-words font-bold">{tasks.find(task => task.id === checkin.taskId)?.title}</p><p className="text-[10px] text-muted-foreground">Pomodoro</p></div>
+                <span className="shrink-0 font-bold text-mint-ink">{checkin.durationMinutes} min</span>
+              </div>
+            ))}
           </Card>
         </section>
       </div> : <div className="flex flex-1 flex-col gap-3 px-4 py-3">
@@ -384,7 +576,7 @@ function Today() {
         </section>
         <section aria-labelledby="day-tasks-heading" className="rounded-[24px] border border-border bg-card p-4">
           <h2 id="day-tasks-heading" className="font-display text-base font-bold">{selectedDay === day ? `Today · ${dayLabel(selectedDay)}` : dayLabel(selectedDay)}</h2>
-          <p className="mb-3 text-[11px] text-muted-foreground">0m focused • 0 Check-ins • {tasks.filter(task => task.completed).length} of {tasks.length} tasks completed</p>
+          <p className="mb-3 text-[11px] text-muted-foreground">{todayCheckins.reduce((sum, checkin) => sum + checkin.durationMinutes, 0)}m focused • {todayCheckins.length} Check-ins • {tasks.filter(task => task.completed).length} of {tasks.length} tasks completed</p>
           {unfinishedPast && <p className="mb-3 text-[11px] text-muted-foreground">Unfinished tasks stay on this Day. Tap Copy → to bring work forward.</p>}
           {selectedDay >= day && <form onSubmit={event => void addTask(event)} className="mb-2">
             <div className="flex min-h-[42px] items-center gap-2 rounded-[14px] bg-surface-subtle px-3 focus-within:outline-2 focus-within:outline-mint">
@@ -394,10 +586,10 @@ function Today() {
             {titleError && <p id="task-title-error" role="alert" className="mt-1 text-xs text-destructive">{titleError}</p>}
           </form>}
           <ul aria-label="Tasks for selected Day" className="flex flex-col gap-1.5">
-            {tasks.map(task => <li key={task.id} aria-label={`${task.title}, ${task.completed ? 'complete' : 'open'}, 0 focused minutes`} className="flex min-h-[46px] items-center gap-2 rounded-xl border border-border bg-card px-2.5 py-1.5">
+            {tasks.map(task => <li key={task.id} aria-label={`${task.title}, ${task.completed ? 'complete' : 'open'}, ${minutesForTask(task.id)} focused minutes`} className="flex min-h-[46px] items-center gap-2 rounded-xl border border-border bg-card px-2.5 py-1.5">
               <span aria-hidden="true" className={`grid size-[20px] shrink-0 place-items-center rounded-md border ${task.completed ? 'border-mint bg-mint text-white' : 'border-border'}`}>{task.completed && <Check size={14} />}</span>
               <span className={`min-w-0 flex-1 break-words text-[13px] font-semibold ${task.completed ? 'text-muted-foreground line-through' : ''}`}>{task.title}</span>
-              <span aria-hidden="true" className="shrink-0 text-[10px] text-ink-tertiary">No focus</span>
+              <span aria-hidden="true" className="shrink-0 text-[10px] text-ink-tertiary">{minutesForTask(task.id) ? `${minutesForTask(task.id)}m` : 'No focus'}</span>
               {selectedDay < day && !task.completed && <button type="button" onClick={() => startCopy(task)} className="shrink-0 rounded-lg px-1 py-2 text-[11px] font-semibold text-mint-ink hover:bg-mint-surface focus-visible:outline-2 focus-visible:outline-mint">Copy →</button>}
               <button type="button" aria-label={`Actions for ${task.title}`} onClick={() => { setMenuTaskId(task.id); setActionError('') }} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint"><EllipsisVertical size={17} aria-hidden="true" /></button>
             </li>)}
@@ -438,6 +630,15 @@ function Today() {
             {!menuTask.completed && <button type="button" onClick={() => startCopy(menuTask)} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle"><ChevronRight size={18} aria-hidden="true" />Copy to a later Day →</button>}
             {actionError && <p role="alert" className="px-3 text-xs text-destructive">{actionError}</p>}
           </div>}
+        </section>
+      </div>}
+      {stopMinutes !== null && <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/35">
+        <section role="dialog" aria-modal="true" aria-label="Stop Session" className="flex w-full max-w-[414px] flex-col gap-3 rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-5">
+          <h2 className="font-display text-lg font-bold">Stop Session?</h2>
+          <p className="text-sm text-muted-foreground">Save {stopMinutes} whole {stopMinutes === 1 ? 'minute' : 'minutes'} of focus, or discard this interval.</p>
+          <Button type="button" onClick={() => void finishFocus('save', stopMinutes)} className="min-h-11 rounded-xl bg-primary text-white">Save {stopMinutes} min</Button>
+          <Button type="button" variant="outline" onClick={() => void finishFocus('discard')} className="min-h-11 rounded-xl">Discard focus</Button>
+          <button type="button" className="min-h-11 text-sm text-muted-foreground" onClick={() => { setStopMinutes(null); if (resumeAfterCancel) void toggleFocus() }}>Keep Session</button>
         </section>
       </div>}
     </main>

@@ -1,0 +1,74 @@
+import { expect, test } from '@playwright/test'
+import { betterAuth } from 'better-auth'
+import { testUtils } from 'better-auth/plugins'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { v7 as uuidv7 } from 'uuid'
+import { elapsedFocusMs } from '@/lib/session-store'
+import { localDay } from '@/lib/task-contract'
+import { startSession, syncSession } from '@/lib/session-client'
+import { SessionStore } from '@/lib/session-store'
+import { TaskStore } from '@/lib/task-store'
+import { syncTasks } from '@/lib/task-sync'
+import { authOptions } from '@/server/auth'
+
+const testAuth = betterAuth({ ...authOptions, plugins: [testUtils()] })
+const origin = 'http://127.0.0.1:3000'
+
+test('separate devices converge offline finish and exact early stop minute boundaries', async () => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `session-local-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  const factory = new IDBFactory()
+  const first = new SessionStore(`focus-first-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  const second = new SessionStore(`focus-second-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  const tasks = new TaskStore(`focus-tasks-${crypto.randomUUID()}`, factory, IDBKeyRange)
+  try {
+    const login = await helpers.login({ userId: user.id })
+    const authorized: typeof fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      fetch(new URL(String(input), origin), { ...init, headers: new Headers([...login.headers, ...new Headers(init?.headers)]) })) as typeof fetch
+    const task = await tasks.createTask(user.id, 'Complete without checking off', localDay())
+    await syncTasks(tasks, user.id, authorized)
+    const session = await startSession(task.id, task.day, authorized)
+    await first.started(user.id, session)
+    const startAt = Date.parse(session.startedAt)
+    expect(Math.floor(elapsedFocusMs(session, startAt + 59_999) / 60_000)).toBe(0)
+    expect(Math.floor(elapsedFocusMs(session, startAt + 60_000) / 60_000)).toBe(1)
+    expect(elapsedFocusMs({ ...session, status: 'paused', elapsedMs: 60_000, segmentStartedAt: null }, startAt + 3_600_000)).toBe(60_000)
+    await syncSession(second, user.id, authorized)
+    expect((await second.snapshot(user.id)).session?.id).toBe(session.id)
+    await first.finish(user.id, 'finish')
+    const disconnected: typeof fetch = (() => Promise.reject(new TypeError('offline'))) as typeof fetch
+    await expect(syncSession(first, user.id, disconnected)).rejects.toThrow('offline')
+    expect((await first.snapshot(user.id)).checkins).toMatchObject([{ taskId: task.id, durationMinutes: 25, origin: 'session' }])
+    await syncSession(first, user.id, authorized)
+    await syncSession(second, user.id, authorized)
+    const onFirst = await first.snapshot(user.id)
+    const onSecond = await second.snapshot(user.id)
+    expect(onFirst.session).toBeNull()
+    expect(onSecond.session).toBeNull()
+    expect(onFirst.checkins).toEqual(onSecond.checkins)
+    expect(onFirst.checkins).toHaveLength(1)
+    expect(onFirst.checkins[0]).toMatchObject({ sourceSessionId: session.id, durationMinutes: 25 })
+    const short = await startSession(task.id, task.day, authorized)
+    await first.started(user.id, short)
+    const belowMinute = Math.floor(elapsedFocusMs(short, Date.parse(short.startedAt) + 59_999) / 60_000)
+    await first.finish(user.id, belowMinute ? 'save' : 'discard', belowMinute || undefined)
+    await syncSession(first, user.id, authorized)
+    await syncSession(second, user.id, authorized)
+    expect((await second.snapshot(user.id)).checkins).toHaveLength(1)
+
+    const oneMinute = await startSession(task.id, task.day, authorized)
+    await first.started(user.id, oneMinute)
+    const minutes = Math.floor(elapsedFocusMs(oneMinute, Date.parse(oneMinute.startedAt) + 60_000) / 60_000)
+    await first.finish(user.id, 'save', minutes)
+    await syncSession(first, user.id, authorized)
+    await syncSession(second, user.id, authorized)
+    expect((await second.snapshot(user.id)).checkins.map(checkin => checkin.durationMinutes).sort((a, b) => a - b)).toEqual([1, 25])
+    expect((await tasks.listTasks(user.id, task.day))[0].completed).toBe(false)
+  } finally {
+    first.close()
+    second.close()
+    tasks.close()
+    await helpers.deleteUser(user.id)
+  }
+})

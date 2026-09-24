@@ -14,6 +14,8 @@ Object.assign(process.env, authTestEnv)
 export default defineConfig({
   testDir: './src',
   testMatch: '**/__tests__/*.test.ts',
+  // The smoke workers and web server share one SQLite test database; serialize fixtures and writes.
+  workers: 1,
   use: { baseURL, browserName: 'chromium' },
   webServer: {
     command: process.env.SMOKE_SERVER === 'production'
