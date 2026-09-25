@@ -10,7 +10,7 @@ import {
   type TaskRecord,
 } from '@/lib/task-contract'
 
-type PendingTask = TaskChange & { userId: string }
+type PendingTask = TaskChange & { userId: string; previousTask?: TaskRecord }
 type TaskSyncCursor = { userId: string; cursor: number; firstLoadComplete: boolean }
 
 class TaskDatabase extends Dexie {
@@ -103,7 +103,7 @@ export class TaskStore {
     ).toArray()
     return tasks.sort((left, right) =>
       left.day > right.day ? -1 : left.day < right.day ? 1 :
-        left.orderKey < right.orderKey ? -1 : left.orderKey > right.orderKey ? 1 : 0,
+        left.orderKey < right.orderKey ? -1 : left.orderKey > right.orderKey ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
     )
   }
 
@@ -156,19 +156,33 @@ export class TaskStore {
       const task = await this.db.tasks.get([userId, id])
       if (!task) throw new Error('Task not found.')
       await this.db.tasks.delete([userId, id])
-      await this.db.pending.add({ userId, id: uuidv7(), deleteTaskId: id })
+      await this.db.pending.add({ userId, id: uuidv7(), deleteTaskId: id, previousTask: task })
     })
   }
 
 
   async pendingChanges(userId: string): Promise<TaskChange[]> {
     const pending = await this.db.pending.where('userId').equals(userId).sortBy('id')
-    return pending.map(({ userId: _userId, ...change }) => change)
+    return pending.map(({ userId: _userId, previousTask: _previousTask, ...change }) => change)
   }
 
-  async acceptChanges(userId: string, ids: string[]): Promise<void> {
-    await this.db.transaction('rw', this.db.pending, async () => {
-      await this.db.pending.bulkDelete(ids.map((id): [string, string] => [userId, id]))
+  async resolveChanges(userId: string, results: Array<{ id: string; status: 'accepted' | 'rejected' }>): Promise<void> {
+    await this.db.transaction('rw', this.db.tasks, this.db.pending, async () => {
+      for (const result of results) {
+        const change = await this.db.pending.get([userId, result.id])
+        if (!change) continue
+        await this.db.pending.delete([userId, result.id])
+        if (result.status === 'accepted') continue
+        const taskId = 'deleteTaskId' in change ? change.deleteTaskId : change.task.id
+        const later = (await this.db.pending.where('userId').equals(userId).toArray())
+          .some(item => ('deleteTaskId' in item ? item.deleteTaskId : item.task.id) === taskId)
+        if (later) continue
+        if ('deleteTaskId' in change) {
+          if (change.previousTask) await this.db.tasks.put(change.previousTask)
+        } else {
+          await this.db.tasks.delete([userId, taskId])
+        }
+      }
     })
   }
 

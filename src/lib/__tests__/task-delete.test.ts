@@ -35,7 +35,7 @@ test('pulled Task tombstones remove remote Tasks without resurrecting from earli
   const tasks = new TaskStore(`delete-remote-${uuidv7()}`, factory, IDBKeyRange)
   try {
     const task = await tasks.createTask(userId, 'Remote', localDay())
-    await tasks.acceptChanges(userId, (await tasks.pendingChanges(userId)).map(change => change.id))
+    await tasks.resolveChanges(userId, (await tasks.pendingChanges(userId)).map(change => ({ id: change.id, status: 'accepted' })))
     await tasks.applyPage(userId, [{ seq: 10, task: { ...task, seq: 10 } }], 10, false)
     await tasks.applyPage(userId, [{ seq: 11, deletedTaskId: task.id }], 11, false)
     expect(await tasks.listTasks(userId, task.day)).toEqual([])

@@ -9,7 +9,7 @@ export type BreakState =
 type FocusState = { userId: string; session: SessionRecord | null; lastTaskId: string | null; sessionTaskTitle?: string; break?: BreakState | null }
 type PendingControl = { id?: number; userId: string; sessionId: string; action: 'pause' | 'resume'; at: string }
 type PendingFinish = { id?: number; userId: string; sessionId: string; outcome: 'finish' | 'save' | 'discard'; durationMinutes?: number; provisionalCheckinId?: string }
-type PendingCheckin = { id?: number; userId: string; change: CheckinChangeRequest }
+type PendingCheckin = { id?: number; userId: string; change: CheckinChangeRequest; taskTitle?: string; taskDay?: string; originalTaskTitle?: string }
 type PendingChange = PendingControl | PendingFinish | PendingCheckin
 export function elapsedFocusMs(session: SessionRecord, now = Date.now()): number {
   return Math.min(session.plannedMinutes * 60_000,
@@ -142,12 +142,12 @@ export class SessionStore {
     })
     await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
       await this.db.checkins.add(record)
-      await this.db.pending.add({ userId, change })
+      await this.db.pending.add({ userId, change, taskTitle: task.title, taskDay: task.day })
     })
     return record
   }
 
-  async editCheckin(userId: string, id: string, task: TaskRecord, minutes: number): Promise<void> {
+  async editCheckin(userId: string, id: string, task: TaskRecord, minutes: number, originalTask?: TaskRecord): Promise<void> {
     checkinTarget(userId, task, minutes)
     await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
       const current = await this.db.checkins.get([userId, id])
@@ -158,7 +158,7 @@ export class SessionStore {
         durationMinutes: minutes, today: localDay(),
       })
       await this.db.checkins.put({ ...current, taskId: task.id, durationMinutes: minutes })
-      await this.db.pending.add({ userId, change })
+      await this.db.pending.add({ userId, change, taskTitle: task.title, taskDay: task.day, originalTaskTitle: originalTask?.title })
     })
   }
 
@@ -199,10 +199,10 @@ export class SessionStore {
     return this.db.pending.where('userId').equals(userId).sortBy('id')
   }
 
-  async acceptCheckinChange(userId: string, id: number, checkin: CheckinRecord | null): Promise<void> {
-    await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
+  async acceptCheckinChange(userId: string, id: number, checkin: CheckinRecord | null): Promise<boolean> {
+    return this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
       const accepted = await this.db.pending.get(id)
-      if (!accepted || accepted.userId !== userId || !('change' in accepted)) return
+      if (!accepted || accepted.userId !== userId || !('change' in accepted)) return false
       const originalId = accepted.change.checkinId
       const later = (await this.db.pending.where('userId').equals(userId).sortBy('id'))
         .filter((item): item is PendingCheckin => 'change' in item && item.id! > id && item.change.checkinId === originalId)
@@ -219,6 +219,7 @@ export class SessionStore {
         for (const item of later) await this.db.pending.delete(item.id!)
       }
       await this.db.pending.delete(id)
+      return true
     })
   }
 

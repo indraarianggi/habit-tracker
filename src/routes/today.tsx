@@ -86,6 +86,7 @@ function Today() {
   const [firstLoadError, setFirstLoadError] = useState(false)
   const [sessionError, setSessionError] = useState('')
   const [syncError, setSyncError] = useState('')
+  const [syncNotices, setSyncNotices] = useState<Array<{ id: string; message: string }>>([])
   const [pending, setPending] = useState(0)
   const [title, setTitle] = useState('')
   const [titleError, setTitleError] = useState('')
@@ -183,6 +184,10 @@ function Today() {
     }
   }
 
+  const reportSyncNotice = useCallback((message: string) => {
+    setSyncNotices(current => [...current, { id: crypto.randomUUID(), message }])
+  }, [])
+
   const syncFocus = useCallback(async () => {
     if (!focusStore || !user || !navigator.onLine) return
     if (syncingFocus.current) {
@@ -191,8 +196,8 @@ function Today() {
     }
     syncingFocus.current = true
     try {
-      if (store && (await store.syncState(user.id)).pending) await syncTasks(store, user.id, fetch, () => syncSession(focusStore, user.id))
-      await syncSession(focusStore, user.id)
+      if (store && (await store.syncState(user.id)).pending) await syncTasks(store, user.id, fetch, () => syncSession(focusStore, user.id, fetch, reportSyncNotice))
+      await syncSession(focusStore, user.id, fetch, reportSyncNotice)
       if (!focusReady.current) {
         setFocus(await focusStore.snapshot(user.id))
         focusReady.current = true
@@ -210,7 +215,7 @@ function Today() {
         void syncFocus()
       }
     }
-  }, [focusStore, store, user])
+  }, [focusStore, store, user, reportSyncNotice])
 
   useEffect(() => {
     if (!focusStore || !user) return
@@ -437,7 +442,7 @@ function Today() {
     inFlight.current = true
     clearTimeout(retryTimer.current)
     try {
-      const syncCheckins = focusStore ? () => syncSession(focusStore, user.id) : undefined
+      const syncCheckins = focusStore ? () => syncSession(focusStore, user.id, fetch, reportSyncNotice) : undefined
       await syncTasks(store, user.id, fetch, syncCheckins)
       setReady(true)
       setFirstLoadError(false)
@@ -459,7 +464,7 @@ function Today() {
         void sync()
       }
     }
-  }, [store, focusStore, user, refreshPending])
+  }, [store, focusStore, user, refreshPending, reportSyncNotice])
 
   useEffect(() => {
     if (!store || !user) return
@@ -555,7 +560,8 @@ function Today() {
       return
     }
     try {
-      if (checkinEditor.mode === 'edit') await focusStore.editCheckin(user.id, checkinEditor.id, selectedCheckinTask, minutes)
+      if (checkinEditor.mode === 'edit') await focusStore.editCheckin(user.id, checkinEditor.id, selectedCheckinTask, minutes,
+        eligibleTasks.find(task => task.id === editingCheckin?.taskId))
       else await focusStore.createCheckin(user.id, selectedCheckinTask, minutes)
       setCheckinEditor(null)
       setFocusError('')
@@ -719,6 +725,10 @@ function Today() {
         </div>
       )}
       {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
+      {syncNotices.map(notice => <div key={notice.id} role="alert" aria-label="Sync conflict" className="sticky top-0 z-10 mx-5 mb-2 flex items-start justify-between gap-3 rounded-2xl border border-amber bg-amber-surface px-4 py-3 text-sm leading-relaxed text-foreground">
+        <p className="min-w-0 break-words">{notice.message}</p>
+        <button type="button" aria-label="Dismiss sync notice" onClick={() => setSyncNotices(current => current.filter(item => item.id !== notice.id))} className="grid size-11 shrink-0 place-items-center rounded-xl text-amber focus-visible:outline-2 focus-visible:outline-amber"><X size={18} aria-hidden="true" /></button>
+      </div>)}
       {focusEndMinutes !== null && <div role="alert" aria-label="Focus interval complete" className="mx-5 flex items-center justify-between gap-3 rounded-2xl border border-mint bg-mint-surface px-4 py-3 text-sm font-semibold text-mint-ink">
         <span>Focus interval complete · {focusEndMinutes} min recorded</span>
         <button type="button" aria-label="Dismiss focus alert" onClick={() => setFocusEndMinutes(null)} className="grid size-9 shrink-0 place-items-center rounded-lg focus-visible:outline-2 focus-visible:outline-mint"><X size={17} aria-hidden="true" /></button>

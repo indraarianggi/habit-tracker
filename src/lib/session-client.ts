@@ -17,7 +17,7 @@ export async function startSession(taskId: string, day: string, fetcher: typeof 
   return sessionRecordSchema.parse(body.session)
 }
 
-export async function syncSession(store: SessionStore, userId: string, fetcher: typeof fetch = fetch): Promise<void> {
+export async function syncSession(store: SessionStore, userId: string, fetcher: typeof fetch = fetch, onNotice?: (message: string) => void): Promise<void> {
   for (;;) {
     const change = (await store.pendingChanges(userId))[0]
     if (!change) break
@@ -26,10 +26,37 @@ export async function syncSession(store: SessionStore, userId: string, fetcher: 
         ...requestOptions, method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...change.change, today: localDay() }),
       })
-      if (response.status === 404 && change.change.action !== 'create') {
-        // A deletion on another device beats our pending correction.
-        await store.acceptCheckinChange(userId, change.id!, null)
-        continue
+      if (response.status === 404) {
+        const failure: unknown = await response.json().catch(() => null)
+        const missingTask = !!failure && typeof failure === 'object' && 'error' in failure && failure.error === 'Task not found'
+        if (change.change.action === 'create' && missingTask) {
+          const visible = (await store.snapshot(userId)).checkins.find(item => item.id === change.change.checkinId)
+          const latest = (await store.pendingChanges(userId))
+            .filter(item => 'change' in item && item.change.checkinId === change.change.checkinId).at(-1)
+          const taskTitle = latest && 'change' in latest ? latest.taskTitle : change.taskTitle
+          const taskDay = latest && 'change' in latest ? latest.taskDay : change.taskDay
+          if (await store.acceptCheckinChange(userId, change.id!, null)) {
+            onNotice?.(`1 Check-in (${visible?.durationMinutes ?? change.change.durationMinutes} min on "${taskTitle ?? change.taskTitle ?? 'a deleted Task'}", ${taskDay ?? change.taskDay ?? 'its Day'}) wasn't saved because that Task was deleted on another device.`)
+          }
+          continue
+        }
+        if (change.change.action !== 'create') {
+          if (missingTask && change.change.action === 'edit') {
+            const authoritative = await fetcher('/api/session', requestOptions)
+            if (!authoritative.ok) throw new Error(`Could not load focus (${authoritative.status}).`)
+            const body: unknown = await authoritative.json()
+            if (!body || typeof body !== 'object' || !('checkins' in body) || !Array.isArray(body.checkins)) throw new Error('Invalid focus response.')
+            const original = body.checkins.map(item => checkinRecordSchema.parse(item))
+              .find(item => item.id === change.change.checkinId)
+            if (await store.acceptCheckinChange(userId, change.id!, original ?? null) && original && original.taskId !== change.change.taskId) {
+              onNotice?.(`That Task was deleted on another device, so only the move failed: the ${original.durationMinutes} min stayed on "${change.originalTaskTitle ?? 'the original Task'}".`)
+            }
+          } else {
+            // An already-deleted Check-in cannot be corrected again.
+            await store.acceptCheckinChange(userId, change.id!, null)
+          }
+          continue
+        }
       }
       if (!response.ok) throw new Error(`Could not sync Check-in (${response.status}).`)
       const body: unknown = await response.json()

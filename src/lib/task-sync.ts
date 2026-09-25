@@ -36,9 +36,7 @@ export async function syncTasks(
     if (accepted.some(({ seq }) => seq === undefined)) {
       throw new Error('Task push returned an accepted change without its sequence.')
     }
-    await store.acceptChanges(userId, accepted.map(({ id }) => id))
-    const rejected = results.find((result) => result.status === 'rejected')
-    if (rejected) throw new Error(rejected.reason ?? 'A Task change was rejected.')
+    await store.resolveChanges(userId, results)
   }
 
   let sawDeletion = false
