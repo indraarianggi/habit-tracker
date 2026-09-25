@@ -7,10 +7,16 @@ export async function syncTasks(
   store: TaskStore,
   userId: string,
   fetcher: typeof fetch = fetch,
+  onDeletion?: () => Promise<void>,
 ): Promise<void> {
   const pending = await store.pendingChanges(userId)
-  for (let offset = 0; offset < pending.length; offset += PAGE_SIZE) {
-    const changes = pending.slice(offset, offset + PAGE_SIZE)
+  for (let offset = 0; offset < pending.length;) {
+    const boundary = pending.findIndex((change, index) => index >= offset && 'deleteTaskId' in change)
+    const end = boundary === -1 ? Math.min(offset + PAGE_SIZE, pending.length)
+      : boundary === offset ? Math.min(offset + 1, pending.length) : Math.min(boundary, offset + PAGE_SIZE)
+    const changes = pending.slice(offset, end)
+    if ('deleteTaskId' in changes[0]) await onDeletion?.()
+    offset = end
     const request = pushRequestSchema.parse({ changes })
     const response = await fetcher('/api/sync/push', {
       method: 'POST',
@@ -35,6 +41,7 @@ export async function syncTasks(
     if (rejected) throw new Error(rejected.reason ?? 'A Task change was rejected.')
   }
 
+  let sawDeletion = false
   let { cursor } = await store.syncState(userId)
   while (true) {
     const query = new URLSearchParams({ after: String(cursor), limit: String(PAGE_SIZE) })
@@ -48,8 +55,12 @@ export async function syncTasks(
     if (page.nextSeq < cursor || (page.hasMore && page.nextSeq === cursor)) {
       throw new Error('Task pull did not advance its cursor.')
     }
+    if (page.changes.some(change => 'deletedTaskId' in change)) sawDeletion = true
     await store.applyPage(userId, page.changes, page.nextSeq, page.hasMore)
     cursor = page.nextSeq
-    if (!page.hasMore) return
+    if (!page.hasMore) {
+      if (sawDeletion) await onDeletion?.()
+      return
+    }
   }
 }

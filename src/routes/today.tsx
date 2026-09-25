@@ -97,6 +97,7 @@ function Today() {
   const [copyDay, setCopyDay] = useState('')
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [actionError, setActionError] = useState('')
   const inFlight = useRef(false)
@@ -108,6 +109,9 @@ function Today() {
   const menuTask = tasks.find(task => task.id === menuTaskId)
   const editingTask = tasks.find(task => task.id === editingId)
   const copySource = tasks.find(task => task.id === copySourceId)
+  const deletingTask = tasks.find(task => task.id === deletingId)
+  const deletingCheckins = deletingTask ? focus.checkins.filter(checkin => checkin.taskId === deletingTask.id) : []
+  const deletingMinutes = deletingCheckins.reduce((sum, checkin) => sum + checkin.durationMinutes, 0)
   const weekStart = shiftDay(selectedDay, -((dayDate(selectedDay).getDay() + 6) % 7))
   const weekEnd = shiftDay(weekStart, 6)
   const unfinishedPast = selectedDay < day && tasks.some(task => !task.completed)
@@ -187,7 +191,7 @@ function Today() {
     }
     syncingFocus.current = true
     try {
-      if (store && (await store.syncState(user.id)).pending) await syncTasks(store, user.id)
+      if (store && (await store.syncState(user.id)).pending) await syncTasks(store, user.id, fetch, () => syncSession(focusStore, user.id))
       await syncSession(focusStore, user.id)
       if (!focusReady.current) {
         setFocus(await focusStore.snapshot(user.id))
@@ -433,7 +437,8 @@ function Today() {
     inFlight.current = true
     clearTimeout(retryTimer.current)
     try {
-      await syncTasks(store, user.id)
+      const syncCheckins = focusStore ? () => syncSession(focusStore, user.id) : undefined
+      await syncTasks(store, user.id, fetch, syncCheckins)
       setReady(true)
       setFirstLoadError(false)
       setSyncError('')
@@ -454,7 +459,7 @@ function Today() {
         void sync()
       }
     }
-  }, [store, user, refreshPending])
+  }, [store, focusStore, user, refreshPending])
 
   useEffect(() => {
     if (!store || !user) return
@@ -578,6 +583,7 @@ function Today() {
     setTitleError('')
     setMenuTaskId(null)
     setCopySourceId(null)
+    setDeletingId(null)
   }
 
   function startCopy(task: TaskRecord) {
@@ -594,6 +600,23 @@ function Today() {
       setCopySourceId(null)
     }
   }
+  async function confirmTaskDeletion() {
+    if (!deletingTask || !store || !focusStore || !user) return
+    const taskId = deletingTask.id
+    const current = (await focusStore.snapshot(user.id)).session
+    if (current?.taskId === taskId) {
+      setActionError('Stop or finish the session first')
+      return
+    }
+    if (await changeTask(async () => {
+      await focusStore.removeTaskCheckins(user.id, taskId)
+      await store.deleteTask(user.id, taskId)
+    })) {
+      setDeletingId(null)
+      if (selectedId === taskId) setSelectedId(null)
+    }
+  }
+
 
   async function changeTask(action: () => Promise<unknown>): Promise<boolean> {
     if (!store || !user) return false
@@ -844,16 +867,22 @@ function Today() {
         <button type="button" onClick={() => setView('tasks')} aria-current={view === 'tasks' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'tasks' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><SquareCheck size={20} aria-hidden="true" />Tasks</button>
         <span className="flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-medium text-muted-foreground opacity-65" aria-disabled="true" title="Progress is coming in a later update"><LayoutGrid size={20} aria-hidden="true" />Progress</span>
       </nav>
-      {(menuTask || editingTask || copySource) && <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/35" onClick={() => { setMenuTaskId(null); setEditingId(null); setCopySourceId(null); setActionError('') }}>
-        <section role="dialog" aria-modal="true" aria-label={copySource ? `Copy ${copySource.title}` : editingTask ? `Rename ${editingTask.title}` : `Actions for ${menuTask?.title}`} onClick={event => event.stopPropagation()} className="w-full max-w-[414px] rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">
+      {(menuTask || editingTask || copySource || deletingTask) && <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/35" onClick={() => { setMenuTaskId(null); setEditingId(null); setCopySourceId(null); setDeletingId(null); setActionError('') }}>
+        <section role="dialog" aria-modal="true" aria-label={deletingTask ? `Delete ${deletingTask.title}` : copySource ? `Copy ${copySource.title}` : editingTask ? `Rename ${editingTask.title}` : `Actions for ${menuTask?.title}`} onClick={event => event.stopPropagation()} className="max-h-[90svh] w-full max-w-[414px] overflow-y-auto rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="break-words text-base font-bold">{copySource ? 'Copy to a later Day' : editingTask ? 'Rename Task' : menuTask?.title}</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">{dayLabel((copySource ?? editingTask ?? menuTask)!.day)} · 0m focused</p>
+              <h2 className="break-words font-display text-lg font-bold">{deletingTask ? `Delete ${deletingTask.title}?` : copySource ? 'Copy to a later Day' : editingTask ? 'Rename Task' : menuTask?.title}</h2>
+              {!deletingTask && <p className="mt-0.5 text-xs text-muted-foreground">{dayLabel((copySource ?? editingTask ?? menuTask)!.day)} · {minutesForTask((copySource ?? editingTask ?? menuTask)!.id)}m focused</p>}
             </div>
-            <button type="button" aria-label="Close Task actions" onClick={() => { setMenuTaskId(null); setEditingId(null); setCopySourceId(null); setActionError('') }} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground"><X size={19} aria-hidden="true" /></button>
+            <button type="button" aria-label="Close Task actions" onClick={() => { setMenuTaskId(null); setEditingId(null); setCopySourceId(null); setDeletingId(null); setActionError('') }} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground"><X size={19} aria-hidden="true" /></button>
           </div>
-          {copySource ? <form onSubmit={event => void submitCopy(event)} className="flex flex-col gap-3">
+          {deletingTask ? <div className="flex flex-col gap-3">
+            <p className="text-sm leading-relaxed text-muted-foreground">“{deletingTask.title}” will be permanently removed from every device. This cannot be undone.</p>
+            {deletingCheckins.length > 0 && <p className="rounded-2xl bg-surface-subtle p-3 text-sm text-foreground">This also deletes {deletingCheckins.length} {deletingCheckins.length === 1 ? 'Check-in' : 'Check-ins'} and {deletingMinutes} focused {deletingMinutes === 1 ? 'minute' : 'minutes'}.</p>}
+            {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
+            <Button type="button" variant="outline" onClick={() => void confirmTaskDeletion()} className="min-h-11 rounded-xl border-destructive font-semibold text-destructive hover:bg-destructive/5 hover:text-destructive focus-visible:border-destructive focus-visible:ring-destructive/20"><Trash2 size={16} aria-hidden="true" />Delete Task permanently</Button>
+            <button type="button" autoFocus onClick={() => { setDeletingId(null); setActionError('') }} className="min-h-11 rounded-xl text-sm font-semibold text-muted-foreground">Keep Task</button>
+          </div> : copySource ? <form onSubmit={event => void submitCopy(event)} className="flex flex-col gap-3">
             <p className="text-xs text-muted-foreground">The original Task stays on its Day. The copy starts incomplete with no focus history.</p>
             <label className="text-xs font-semibold" htmlFor="copy-target-day">Destination Day</label>
             <input id="copy-target-day" type="date" aria-label="Destination Day" required min={shiftDay(copySource.day, 1) > day ? shiftDay(copySource.day, 1) : day} value={copyDay} onChange={event => { setCopyDay(event.target.value); setActionError('') }} className="h-11 rounded-xl border border-border px-3 text-sm outline-none focus:border-mint" />
@@ -870,6 +899,8 @@ function Today() {
             <button type="button" disabled={tasks[0]?.id === menuTask.id} onClick={() => void changeTask(() => store!.moveTask(user.id, menuTask.id, 'up'))} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle disabled:opacity-35"><ArrowUp size={18} aria-hidden="true" />Move up</button>
             <button type="button" disabled={tasks.at(-1)?.id === menuTask.id} onClick={() => void changeTask(() => store!.moveTask(user.id, menuTask.id, 'down'))} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle disabled:opacity-35"><ArrowDown size={18} aria-hidden="true" />Move down</button>
             {!menuTask.completed && <button type="button" onClick={() => startCopy(menuTask)} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-surface-subtle"><ChevronRight size={18} aria-hidden="true" />Copy to a later Day →</button>}
+            <button type="button" disabled={activeFocus?.taskId === menuTask.id} onClick={() => { setDeletingId(menuTask.id); setMenuTaskId(null); setActionError('') }} className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold text-destructive hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-50"><Trash2 size={18} aria-hidden="true" />{activeFocus?.taskId === menuTask.id ? 'Delete Task' : `Delete Task${minutesForTask(menuTask.id) ? ` (removes ${minutesForTask(menuTask.id)}m focus)` : ''}`}</button>
+            {activeFocus?.taskId === menuTask.id && <p className="px-3 text-xs font-semibold text-amber">Stop or finish the session first</p>}
             {actionError && <p role="alert" className="px-3 text-xs text-destructive">{actionError}</p>}
           </div>}
         </section>

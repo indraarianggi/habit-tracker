@@ -6,14 +6,26 @@ import { database } from '@/server/db'
 
 const noCache = { 'Cache-Control': 'private, no-store' }
 type Receipt = { userId: string; seq: number }
-type ExistingTask = { userId: string; day: string; createdAt: string }
+type ExistingTask = { userId: string; day: string; title: string; completed: number; orderKey: string; createdAt: string }
 type PushResult = { id: string; status: 'accepted' | 'rejected'; seq?: number; reason?: string }
 
 const receiptById = database.prepare('SELECT userId, seq FROM task_change WHERE id = ?')
-const taskById = database.prepare('SELECT userId, day, createdAt FROM task WHERE id = ?')
+const taskById = database.prepare('SELECT userId, day, title, completed, orderKey, createdAt FROM task WHERE id = ?')
+const deletedTaskById = database.prepare('SELECT 1 FROM task_change WHERE taskId = ? AND deleted = 1')
+const activeSession = database.prepare('SELECT 1 FROM active_session WHERE userId = ? AND taskId = ?')
+const markCheckinsDeleted = database.prepare(`
+  INSERT INTO checkin_deletion (checkinId, userId)
+  SELECT id, userId FROM session_checkin WHERE taskId = ? AND userId = ?
+`)
+const removeTask = database.prepare('DELETE FROM task WHERE id = ? AND userId = ?')
+const forgetLastTask = database.prepare('DELETE FROM session_last_task WHERE taskId = ? AND userId = ?')
 const insertReceipt = database.prepare(`
   INSERT INTO task_change (id, userId, taskId, day, title, completed, orderKey, createdAt, acceptedAt)
   VALUES (@changeId, @userId, @taskId, @day, @title, @completed, @orderKey, @createdAt, @acceptedAt)
+`)
+const insertDeletionReceipt = database.prepare(`
+  INSERT INTO task_change (id, userId, taskId, day, title, completed, orderKey, createdAt, acceptedAt, deleted)
+  VALUES (@changeId, @userId, @taskId, @day, @title, @completed, @orderKey, @createdAt, @acceptedAt, 1)
 `)
 const saveTask = database.prepare(`
   INSERT INTO task (id, userId, day, title, completed, orderKey, createdAt, updatedAt, seq)
@@ -34,8 +46,28 @@ const acceptChange = database.transaction((userId: string, change: TaskChange): 
       : { id: change.id, status: 'rejected', reason: 'Change cannot be accepted.' }
   }
 
-  const previous = taskById.get(change.task.id) as ExistingTask | undefined
+  const taskId = 'deleteTaskId' in change ? change.deleteTaskId : change.task.id
+  const previous = taskById.get(taskId) as ExistingTask | undefined
   if (previous?.userId !== undefined && previous.userId !== userId) {
+    return { id: change.id, status: 'rejected', reason: 'Task cannot be changed.' }
+  }
+  if ('deleteTaskId' in change) {
+    if (!previous) return { id: change.id, status: 'rejected', reason: 'Task cannot be changed.' }
+    if (activeSession.get(userId, taskId)) {
+      return { id: change.id, status: 'rejected', reason: 'Stop or finish the session first' }
+    }
+    const seq = Number(insertDeletionReceipt.run({
+      changeId: change.id, userId, taskId,
+      day: previous.day, title: previous.title, completed: previous.completed,
+      orderKey: previous.orderKey, createdAt: previous.createdAt,
+      acceptedAt: new Date().toISOString(),
+    }).lastInsertRowid)
+    markCheckinsDeleted.run(taskId, userId)
+    removeTask.run(taskId, userId)
+    forgetLastTask.run(taskId, userId)
+    return { id: change.id, status: 'accepted', seq }
+  }
+  if (deletedTaskById.get(taskId)) {
     return { id: change.id, status: 'rejected', reason: 'Task cannot be changed.' }
   }
   if (previous && previous.day !== change.task.day) {
@@ -76,7 +108,7 @@ export const Route = createFileRoute('/api/sync/push')({
           return Response.json({ error: 'Invalid task changes' }, { status: 400, headers: noCache })
         }
 
-        const results = parsed.data.changes.map((change) => acceptChange(session.user.id, change))
+        const results = parsed.data.changes.map((change) => acceptChange.immediate(session.user.id, change))
         return Response.json({ results }, { headers: noCache })
       },
     },

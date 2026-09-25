@@ -111,7 +111,7 @@ database.pragma('journal_mode = WAL')
 database.pragma('foreign_keys = ON')
 
 const version = database.pragma('user_version', { simple: true }) as number
-if (version > 4) throw new Error(`Unsupported SQLite schema version ${version}`)
+if (version > 5) throw new Error(`Unsupported SQLite schema version ${version}`)
 
 if (version < 4) {
   database.transaction(() => {
@@ -129,5 +129,14 @@ if (version < 4) {
     }
     database.exec(checkinSchemaV4)
     database.pragma('user_version = 4')
+  })()
+}
+if (version < 5) {
+  database.transaction(() => {
+    database.exec(`
+      ALTER TABLE task_change ADD COLUMN deleted integer not null default 0 check (deleted in (0, 1));
+      CREATE INDEX task_change_task_deleted_idx ON task_change (taskId, deleted);
+    `)
+    database.pragma('user_version = 5')
   })()
 }

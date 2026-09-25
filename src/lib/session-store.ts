@@ -178,6 +178,22 @@ export class SessionStore {
       await this.db.pending.add({ userId, change })
     })
   }
+  async removeTaskCheckins(userId: string, taskId: string): Promise<void> {
+    await this.db.transaction('rw', this.db.checkins, this.db.pending, async () => {
+      const checkins = await this.db.checkins.where('[userId+id]')
+        .between([userId, Dexie.minKey], [userId, Dexie.maxKey]).toArray()
+      const removed = checkins.filter(checkin => checkin.taskId === taskId)
+      const ids = new Set(removed.map(checkin => checkin.id))
+      for (const checkin of removed) await this.db.checkins.delete([userId, checkin.id])
+      for (const pending of await this.db.pending.where('userId').equals(userId).toArray()) {
+        if ('change' in pending && (ids.has(pending.change.checkinId) ||
+          (pending.change.action !== 'delete' && pending.change.taskId === taskId))) {
+          await this.db.pending.delete(pending.id!)
+        }
+      }
+    })
+  }
+
 
   async pendingChanges(userId: string): Promise<PendingChange[]> {
     return this.db.pending.where('userId').equals(userId).sortBy('id')

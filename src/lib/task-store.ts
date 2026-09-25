@@ -151,10 +151,19 @@ export class TaskStore {
       return true
     })
   }
+  async deleteTask(userId: string, id: string): Promise<void> {
+    await this.db.transaction('rw', this.db.tasks, this.db.pending, async () => {
+      const task = await this.db.tasks.get([userId, id])
+      if (!task) throw new Error('Task not found.')
+      await this.db.tasks.delete([userId, id])
+      await this.db.pending.add({ userId, id: uuidv7(), deleteTaskId: id })
+    })
+  }
+
 
   async pendingChanges(userId: string): Promise<TaskChange[]> {
     const pending = await this.db.pending.where('userId').equals(userId).sortBy('id')
-    return pending.map(({ id, task }) => ({ id, task }))
+    return pending.map(({ userId: _userId, ...change }) => change)
   }
 
   async acceptChanges(userId: string, ids: string[]): Promise<void> {
@@ -165,20 +174,24 @@ export class TaskStore {
 
   async applyPage(
     userId: string,
-    changes: Array<{ seq: number; task: TaskRecord }>,
+    changes: Array<{ seq: number; task: TaskRecord } | { seq: number; deletedTaskId: string }>,
     nextSeq: number,
     hasMore: boolean,
   ): Promise<void> {
     await this.db.transaction('rw', this.db.tasks, this.db.pending, this.db.cursors, async () => {
       const cursor = await this.db.cursors.get(userId)
-      for (const { seq, task } of changes) {
+      for (const change of changes) {
+        if (change.seq <= (cursor?.cursor ?? 0)) continue
+        if ('deletedTaskId' in change) {
+          await this.db.tasks.delete([userId, change.deletedTaskId])
+          continue
+        }
+        const { seq, task } = change
         if (task.userId !== userId) continue
         const pending = await this.db.pending.where('[userId+task.id]').equals([userId, task.id]).first()
         if (pending) continue
         const existing = await this.db.tasks.get([userId, task.id])
-        if (!existing || seq > existing.seq) {
-          await this.db.tasks.put({ ...task, seq })
-        }
+        if (!existing || seq > existing.seq) await this.db.tasks.put({ ...task, seq })
       }
       await this.db.cursors.put({
         userId,

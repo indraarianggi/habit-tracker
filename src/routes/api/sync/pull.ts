@@ -7,6 +7,7 @@ const noCache = { 'Cache-Control': 'private, no-store' }
 type ChangeRow = {
   seq: number
   userId: string
+  deleted: number
   taskId: string
   day: string
   title: string
@@ -16,7 +17,7 @@ type ChangeRow = {
 }
 
 const pageAfter = database.prepare(`
-  SELECT seq, userId, taskId, day, title, completed, orderKey, createdAt
+  SELECT seq, userId, taskId, day, title, completed, orderKey, createdAt, deleted
   FROM task_change
   WHERE userId = ? AND seq > ?
   ORDER BY seq ASC
@@ -45,7 +46,8 @@ export const Route = createFileRoute('/api/sync/pull')({
         const rows = pageAfter.all(session.user.id, after, limit + 1) as ChangeRow[]
         const hasMore = rows.length > limit
         if (hasMore) rows.pop()
-        const changes = rows.map(({ seq, userId, taskId, day, title, completed, orderKey, createdAt }) => {
+        const changes = rows.map(({ seq, userId, taskId, day, title, completed, orderKey, createdAt, deleted }) => {
+          if (deleted) return { seq, deletedTaskId: taskId }
           const task: TaskRecord = {
             id: taskId,
             userId,

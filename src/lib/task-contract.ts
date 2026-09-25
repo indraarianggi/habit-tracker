@@ -19,10 +19,10 @@ export const taskRecordSchema = taskBodySchema.extend({
   userId: z.string().min(1),
   seq: z.number().int().nonnegative(),
 })
-export const taskChangeSchema = z.strictObject({
-  id: z.uuidv7(),
-  task: taskBodySchema,
-})
+export const taskChangeSchema = z.union([
+  z.strictObject({ id: z.uuidv7(), task: taskBodySchema }),
+  z.strictObject({ id: z.uuidv7(), deleteTaskId: z.uuidv7() }),
+])
 export const pushRequestSchema = z.strictObject({ changes: z.array(taskChangeSchema).max(100) })
 export const pushResponseSchema = z.strictObject({ results: z.array(z.strictObject({
   id: z.uuidv7(),
@@ -31,10 +31,10 @@ export const pushResponseSchema = z.strictObject({ results: z.array(z.strictObje
   reason: z.string().optional(),
 })) })
 export const pullResponseSchema = z.strictObject({
-  changes: z.array(z.strictObject({
-    seq: z.number().int().positive(),
-    task: taskRecordSchema,
-  })),
+  changes: z.array(z.union([
+    z.strictObject({ seq: z.number().int().positive(), task: taskRecordSchema }),
+    z.strictObject({ seq: z.number().int().positive(), deletedTaskId: z.uuidv7() }),
+  ])),
   nextSeq: z.number().int().nonnegative(),
   hasMore: z.boolean(),
 })
