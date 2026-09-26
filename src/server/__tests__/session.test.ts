@@ -109,7 +109,7 @@ test('early save and discard preserve first receipt, last Task, validation, and 
     const foreignId = uuidv7()
     expect((await request('/api/session/start', { id: uuidv7(), taskId: priorDayId, day, plannedMinutes: 25 })).status).toBe(400)
     expect((await request('/api/session/start', { id: uuidv7(), taskId: foreignId, day, plannedMinutes: 25 })).status).toBe(404)
-    expect((await request('/api/session/start', { id: uuidv7(), taskId, day, plannedMinutes: 30 })).status).toBe(400)
+    expect((await request('/api/session/start', { id: uuidv7(), taskId, day, plannedMinutes: 30 })).status).toBe(409)
     const id = uuidv7()
     expect((await request('/api/session/start', { id, taskId, day, plannedMinutes: 25 })).status).toBe(200)
     expect((await request('/api/session/finish', { id, outcome: 'save', durationMinutes: 0 })).status).toBe(400)

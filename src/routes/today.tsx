@@ -3,18 +3,24 @@ import { liveQuery } from 'dexie'
 import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { authClient } from '@/auth-client'
+import { SignIn } from '@/components/sign-in'
+import { SettingsScreen } from '@/components/settings-screen'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { DEVICE_PREFERENCES_KEY, readDevicePreferences, saveDevicePreferences, type DevicePreferences } from '@/lib/device-preferences'
 import { localDay, type TaskRecord } from '@/lib/task-contract'
 import { chooseTimerTask, type CheckinRecord, type SessionRecord } from '@/lib/session-contract'
 import { startSession, syncSession } from '@/lib/session-client'
 import { elapsedFocusMs, remainingBreakSeconds, SessionStore, type BreakState } from '@/lib/session-store'
+import { defaultDurations, type DurationSettings } from '@/lib/settings-contract'
+import { SettingsStore, syncSettings } from '@/lib/settings-store'
 import { TaskStore } from '@/lib/task-store'
-import { syncTasks } from '@/lib/task-sync'
+import { SyncAuthError, syncTasks } from '@/lib/task-sync'
 
-type TodayUser = { id: string; name: string; image: string | null }
+type TodayUser = { id: string; name: string; email: string; image: string | null }
 const cachedUserKey = 'habit-tracker:last-user'
+const signedOutKey = 'habit-tracker:signed-out'
 
 
 function shiftDay(day: string, offset: number): string {
@@ -51,9 +57,14 @@ function Today() {
   const [user, setUser] = useState<TodayUser | null>(null)
   const [store, setStore] = useState<TaskStore | null>(null)
   const [focusStore, setFocusStore] = useState<SessionStore | null>(null)
+  const [settingsStore, setSettingsStore] = useState<SettingsStore | null>(null)
+  const [durations, setDurations] = useState<DurationSettings>(defaultDurations)
+  const [preferences, setPreferences] = useState<DevicePreferences>(readDevicePreferences)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [focus, setFocus] = useState<{ session: SessionRecord | null; lastTaskId: string | null; break: BreakState | null; checkins: CheckinRecord[] }>({ session: null, lastTaskId: null, break: null, checkins: [] })
   const [focusLoaded, setFocusLoaded] = useState(false)
   const [connected, setConnected] = useState(true)
+  const [authRequired, setAuthRequired] = useState(false)
   const [focusError, setFocusError] = useState('')
   const [stopMinutes, setStopMinutes] = useState<number | null>(null)
   const [awaySessionId, setAwaySessionId] = useState<string | null>(null)
@@ -61,7 +72,7 @@ function Today() {
   const [recoveryMinutes, setRecoveryMinutes] = useState('')
   const [focusEndMinutes, setFocusEndMinutes] = useState<number | null>(null)
   const [wakeSupported, setWakeSupported] = useState(false)
-  const [wakeEnabled, setWakeEnabled] = useState(true)
+  const wakeEnabled = preferences.wakeLock
   const [visible, setVisible] = useState(true)
   const [resumeAfterCancel, setResumeAfterCancel] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -79,7 +90,7 @@ function Today() {
   const [eligibleTasks, setEligibleTasks] = useState<TaskRecord[]>([])
   const [checkinEditor, setCheckinEditor] = useState<{ mode: 'add' } | { mode: 'edit'; id: string } | null>(null)
   const [checkinTaskId, setCheckinTaskId] = useState('')
-  const [checkinMinutes, setCheckinMinutes] = useState('25')
+  const [checkinMinutes, setCheckinMinutes] = useState(String(defaultDurations.focusMinutes))
   const [checkinError, setCheckinError] = useState('')
   const [confirmCheckinDelete, setConfirmCheckinDelete] = useState(false)
   const [ready, setReady] = useState(false)
@@ -88,6 +99,9 @@ function Today() {
   const [syncError, setSyncError] = useState('')
   const [syncNotices, setSyncNotices] = useState<Array<{ id: string; message: string }>>([])
   const [pending, setPending] = useState(0)
+  const [signOutPending, setSignOutPending] = useState<number | null>(null)
+  const [signedOut, setSignedOut] = useState(false)
+  const [statusOpen, setStatusOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [titleError, setTitleError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -105,7 +119,17 @@ function Today() {
   const rerunRequested = useRef(false)
   const retryTimer = useRef<number | undefined>(undefined)
   const failures = useRef(0)
+  const userIdRef = useRef<string | null>(null)
+  const storeActive = useRef(true)
+  const activeScope = useRef<string | null>(null)
+  const currentSync = useRef<(() => Promise<void>) | null>(null)
+  const identityRefresh = useRef<((signal?: AbortSignal) => Promise<void>) | null>(null)
+  const currentFocusSync = useRef<(() => Promise<void>) | null>(null)
+  const syncPromise = useRef<Promise<void> | null>(null)
   const day = localDay()
+  const status = authRequired ? 'Sign in to sync' : !connected ? 'Offline'
+    : failures.current >= 3 ? "Can't sync"
+      : pending > 0 ? `${pending} ${pending === 1 ? 'change' : 'changes'} waiting` : null
   const displayedDay = view === 'tasks' ? selectedDay : day
   const menuTask = tasks.find(task => task.id === menuTaskId)
   const editingTask = tasks.find(task => task.id === editingId)
@@ -121,7 +145,7 @@ function Today() {
   const elapsedMs = activeFocus ? elapsedFocusMs(activeFocus, clockNow) : 0
   const remainingSeconds = activeFocus
     ? Math.max(0, Math.ceil((activeFocus.plannedMinutes * 60_000 - elapsedMs) / 1000))
-    : activeBreak?.phase === 'running' ? remainingBreakSeconds(activeBreak, clockNow) : activeBreak ? 0 : 25 * 60
+    : activeBreak?.phase === 'running' ? remainingBreakSeconds(activeBreak, clockNow) : activeBreak ? 0 : durations.focusMinutes * 60
   const clockText = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`
   const todayCheckins = focus.checkins.filter(checkin => tasks.some(task => task.id === checkin.taskId))
   const minutesForTask = (taskId: string) => todayCheckins.reduce((sum, checkin) => sum + (checkin.taskId === taskId ? checkin.durationMinutes : 0), 0)
@@ -130,8 +154,10 @@ function Today() {
 
   useEffect(() => {
     const instance = new TaskStore()
+    storeActive.current = true
     setStore(instance)
     return () => {
+      storeActive.current = false
       clearTimeout(retryTimer.current)
       instance.close()
     }
@@ -140,6 +166,27 @@ function Today() {
     const instance = new SessionStore()
     setFocusStore(instance)
     return () => instance.close()
+  }, [])
+  useEffect(() => {
+    const instance = new SettingsStore()
+    setSettingsStore(instance)
+    return () => instance.close()
+  }, [])
+  useEffect(() => {
+    if (!settingsStore || !user) return
+    setDurations(defaultDurations)
+    const subscription = liveQuery(() => settingsStore.snapshot(user.id)).subscribe({
+      next: setDurations,
+      error: () => setSyncError('Could not read timer settings on this device.'),
+    })
+    return () => subscription.unsubscribe()
+  }, [settingsStore, user])
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === DEVICE_PREFERENCES_KEY) setPreferences(readDevicePreferences())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
   }, [])
 
   useEffect(() => {
@@ -168,7 +215,7 @@ function Today() {
 
   function playAlert(kind: 'focus' | 'break') {
     const context = audio.current
-    if (!context || document.visibilityState !== 'visible') return
+    if (!context || document.visibilityState !== 'visible' || !(kind === 'focus' ? preferences.focusSound : preferences.breakSound)) return
     const start = context.currentTime
     for (const [index, frequency] of (kind === 'focus' ? [660, 880] : [520, 390]).entries()) {
       const oscillator = context.createOscillator()
@@ -189,7 +236,7 @@ function Today() {
   }, [])
 
   const syncFocus = useCallback(async () => {
-    if (!focusStore || !user || !navigator.onLine) return
+    if (!focusStore || !user || !navigator.onLine || authRequired) return
     if (syncingFocus.current) {
       rerunFocus.current = true
       return
@@ -198,24 +245,29 @@ function Today() {
     try {
       if (store && (await store.syncState(user.id)).pending) await syncTasks(store, user.id, fetch, () => syncSession(focusStore, user.id, fetch, reportSyncNotice))
       await syncSession(focusStore, user.id, fetch, reportSyncNotice)
-      if (!focusReady.current) {
-        setFocus(await focusStore.snapshot(user.id))
-        focusReady.current = true
-      }
+      if (userIdRef.current !== user.id) return
+      if (!focusReady.current) setFocus(await focusStore.snapshot(user.id))
+      focusReady.current = true
       setConnected(true)
       setFocusLoaded(true)
       setFocusError('')
     } catch (reason) {
-      setConnected(false)
+      if (userIdRef.current !== user.id) return
+      if (reason instanceof SyncAuthError) {
+        setAuthRequired(true)
+        if (reason.status === 403) void identityRefresh.current?.()
+      }
+      setConnected(navigator.onLine)
       setFocusError(reason instanceof Error ? reason.message : 'Could not sync focus.')
     } finally {
       syncingFocus.current = false
       if (rerunFocus.current) {
         rerunFocus.current = false
-        void syncFocus()
+        void currentFocusSync.current?.()
       }
     }
-  }, [focusStore, store, user, reportSyncNotice])
+  }, [focusStore, store, user, authRequired, reportSyncNotice])
+  useEffect(() => { currentFocusSync.current = syncFocus }, [syncFocus])
 
   useEffect(() => {
     if (!focusStore || !user) return
@@ -241,7 +293,7 @@ function Today() {
       lastTick.current = now
       setClockNow(now)
     }, 1000)
-    const poll = window.setInterval(() => { if (navigator.onLine) void syncFocus() }, 5000)
+    const poll = window.setInterval(() => { if (navigator.onLine && !authRequired) void syncFocus() }, 5000)
     setConnected(navigator.onLine)
     void syncFocus()
     return () => {
@@ -252,7 +304,7 @@ function Today() {
       window.removeEventListener('offline', offline)
       document.removeEventListener('visibilitychange', foreground)
     }
-  }, [focusStore, user, syncFocus])
+  }, [focusStore, user, authRequired, syncFocus])
 
   useEffect(() => {
     if (view !== 'timer') return
@@ -338,12 +390,15 @@ function Today() {
     const eligible = tasks.filter(task => task.day === localDay())
     const selected = eligible.find(task => task.id === (preferredTaskId ?? selectedId))
       ?? (preferredTaskId ? chooseTimerTask(eligible, null) : null)
-    if (!store || !focusStore || !user || !selected || !connected || starting) return
+    if (!store || !focusStore || !user || !selected || !connected || authRequired || starting) return
     unlockAudio()
     setStarting(true)
     try {
       await syncTasks(store, user.id)
-      const session = await startSession(selected.id, localDay())
+      if (!settingsStore) throw new Error('Timer settings are still loading.')
+      await syncSettings(settingsStore, user.id)
+      const current = await settingsStore.snapshot(user.id)
+      const session = await startSession(selected.id, localDay(), fetch, current.focusMinutes)
       await focusStore.started(user.id, session, selected.title)
       observedRunning.current = session.id
       setSelectedId(selected.id)
@@ -392,32 +447,51 @@ function Today() {
   }
 
   const loadSession = useCallback(async (signal?: AbortSignal) => {
+    if (localStorage.getItem(signedOutKey)) {
+      void navigate({ to: '/', replace: true })
+      return
+    }
+    const useCached = (expired: boolean) => {
+      const cached = localStorage.getItem(cachedUserKey)
+      if (!cached) return false
+      try {
+        const previous = JSON.parse(cached) as TodayUser
+        if (!previous.id || !previous.name) return false
+        userIdRef.current = previous.id
+        setUser(current => current?.id === previous.id && current.name === previous.name && current.email === previous.email && current.image === previous.image ? current : previous)
+        setAuthRequired(expired)
+        return true
+      } catch { return false }
+    }
     try {
-      const response = await fetch('/api/today', { credentials: 'same-origin', signal })
+      const response = await fetch('/api/today', { credentials: 'same-origin', cache: 'no-store', signal })
+      if (signal?.aborted) return
       if (response.status === 401) {
-        localStorage.removeItem(cachedUserKey)
-        void navigate({ to: '/', replace: true })
+        if (!useCached(true)) void navigate({ to: '/', replace: true })
         return
       }
       if (!response.ok) throw new Error('Could not load Today')
       const data: { user: TodayUser } = await response.json()
+      if (signal?.aborted) return
+      if (userIdRef.current && userIdRef.current !== data.user.id) {
+        setReady(false)
+        setTasks([])
+        setEligibleTasks([])
+        setFocus({ session: null, lastTaskId: null, break: null, checkins: [] })
+        setFocusLoaded(false)
+        focusReady.current = false
+        failures.current = 0
+        setPending(0)
+      }
+      userIdRef.current = data.user.id
       localStorage.setItem(cachedUserKey, JSON.stringify(data.user))
-      setUser(data.user)
+      setUser(current => current?.id === data.user.id && current.name === data.user.name && current.email === data.user.email && current.image === data.user.image ? current : data.user)
+      setAuthRequired(false)
       setFirstLoadError(false)
       setSessionError('')
     } catch (reason) {
       if (signal?.aborted) return
-      const cached = localStorage.getItem(cachedUserKey)
-      if (cached) {
-        try {
-          const previous = JSON.parse(cached) as TodayUser
-          if (previous.id && previous.name) {
-            setUser(previous)
-            setSyncError('Offline')
-            return
-          }
-        } catch { /* An invalid identity is not a usable local account. */ }
-      }
+      if (useCached(false)) return
       setFirstLoadError(true)
       setSessionError(reason instanceof Error ? reason.message : 'Could not load Today')
     }
@@ -428,67 +502,118 @@ function Today() {
     void loadSession(controller.signal)
     return () => controller.abort()
   }, [loadSession])
+  useEffect(() => { identityRefresh.current = loadSession }, [loadSession])
 
   const refreshPending = useCallback(async () => {
-    if (store && user) setPending((await store.syncState(user.id)).pending)
-  }, [store, user])
+    if (!store || !user || !storeActive.current) return
+    try {
+      const [taskState, focusChanges, settingsChanges] = await Promise.all([
+        store.syncState(user.id), focusStore?.pendingChanges(user.id), settingsStore?.pendingCount(user.id),
+      ])
+      if (storeActive.current && userIdRef.current === user.id) setPending(taskState.pending + (focusChanges?.length ?? 0) + (settingsChanges ?? 0))
+    } catch {
+      if (storeActive.current) setSyncError('Could not read changes on this device.')
+    }
+  }, [store, focusStore, settingsStore, user])
 
   const sync = useCallback(async () => {
-    if (!store || !user) return
+    if (!store || !settingsStore || !user || !storeActive.current || !navigator.onLine || authRequired) return
     if (inFlight.current) {
       rerunRequested.current = true
+      // The owner reports this failure and schedules the retry.
+      await syncPromise.current?.catch(() => {})
       return
     }
     inFlight.current = true
     clearTimeout(retryTimer.current)
     try {
-      const syncCheckins = focusStore ? () => syncSession(focusStore, user.id, fetch, reportSyncNotice) : undefined
-      await syncTasks(store, user.id, fetch, syncCheckins)
+      const operation = (async () => {
+        const syncCheckins = focusStore ? () => syncSession(focusStore, user.id, fetch, reportSyncNotice) : undefined
+        await syncTasks(store, user.id, fetch, syncCheckins)
+        if (focusStore) await syncSession(focusStore, user.id, fetch, reportSyncNotice)
+        await syncSettings(settingsStore, user.id)
+      })()
+      syncPromise.current = operation
+      await operation
+      if (!storeActive.current || userIdRef.current !== user.id) return
       setReady(true)
       setFirstLoadError(false)
       setSyncError('')
       failures.current = 0
       await refreshPending()
     } catch (reason) {
-      setSyncError(reason instanceof Error ? reason.message : 'Could not sync')
+      if (!storeActive.current || userIdRef.current !== user.id) return
       const state = await store.syncState(user.id)
       if (!state.firstLoadComplete) setFirstLoadError(true)
-      failures.current += 1
-      if (navigator.onLine) {
-        retryTimer.current = window.setTimeout(() => void sync(), Math.min(1000 * 2 ** (failures.current - 1), 300_000))
+      await refreshPending()
+      if (reason instanceof SyncAuthError) {
+        setAuthRequired(true)
+        setSyncError('')
+        if (reason.status === 403) void loadSession()
+      } else {
+        setSyncError(reason instanceof Error ? reason.message : 'Could not sync')
+        if (navigator.onLine) {
+          failures.current += 1
+          retryTimer.current = window.setTimeout(() => void sync(), Math.min(1000 * 2 ** (failures.current - 1), 300_000))
+        }
       }
     } finally {
+      syncPromise.current = null
       inFlight.current = false
-      if (rerunRequested.current) {
+      if (storeActive.current && rerunRequested.current) {
         rerunRequested.current = false
-        void sync()
+        void currentSync.current?.()
       }
     }
-  }, [store, focusStore, user, refreshPending, reportSyncNotice])
+  }, [store, focusStore, settingsStore, user, authRequired, refreshPending, reportSyncNotice, loadSession])
+
+  useEffect(() => { currentSync.current = sync }, [sync])
 
   useEffect(() => {
     if (!store || !user) return
     let active = true
-    setReady(false)
-    setTasks([])
+    if (activeScope.current !== user.id) {
+      activeScope.current = user.id
+      setReady(false)
+      setTasks([])
+    }
     void store.syncState(user.id).then(state => {
-      if (!active) return
+      if (!active || !storeActive.current) return
       setReady(state.firstLoadComplete)
-      setPending(state.pending)
+      // On an authenticated load, wait for the authoritative Session before treating an elapsed timer as visible completion.
+      if (!navigator.onLine || authRequired) setFocusLoaded(state.firstLoadComplete)
+      void refreshPending()
       void sync()
-    })
-    const reconnect = () => void sync()
-    const foreground = () => { if (document.visibilityState === 'visible') void sync() }
+    }).catch(() => { if (active && storeActive.current) setFirstLoadError(true) })
+    const reconnect = () => { setConnected(true); void loadSession(); void sync() }
+    const offline = () => setConnected(false)
+    const foreground = () => { if (document.visibilityState === 'visible') { void loadSession(); void sync() } }
     window.addEventListener('online', reconnect)
+    window.addEventListener('offline', offline)
     document.addEventListener('visibilitychange', foreground)
     return () => {
       active = false
       window.removeEventListener('online', reconnect)
+      window.removeEventListener('offline', offline)
       document.removeEventListener('visibilitychange', foreground)
       clearTimeout(retryTimer.current)
     }
-  }, [store, user, sync])
+  }, [store, user, sync, refreshPending, loadSession])
 
+  useEffect(() => {
+    if (!focusStore || !user) return
+    const subscription = liveQuery(() => focusStore.pendingChanges(user.id)).subscribe({
+      next: () => { void refreshPending() },
+    })
+    return () => subscription.unsubscribe()
+  }, [focusStore, user, refreshPending])
+  useEffect(() => {
+    if (!settingsStore || !user) return
+    const subscription = liveQuery(() => settingsStore.pendingCount(user.id)).subscribe({
+      next: () => { void refreshPending() },
+    })
+    return () => subscription.unsubscribe()
+  }, [settingsStore, user, refreshPending])
   useEffect(() => {
     if (!store || !user) return
     setTasks([])
@@ -542,7 +667,7 @@ function Today() {
   function openCheckin(checkin?: CheckinRecord) {
     setCheckinEditor(checkin ? { mode: 'edit', id: checkin.id } : { mode: 'add' })
     setCheckinTaskId(checkin?.taskId ?? (view === 'timer' ? selectedId : tasks[0]?.id) ?? eligibleTasks[0]?.id ?? '')
-    setCheckinMinutes(String(checkin?.durationMinutes ?? 25))
+    setCheckinMinutes(String(checkin?.durationMinutes ?? durations.focusMinutes))
     setCheckinError('')
     setConfirmCheckinDelete(false)
   }
@@ -668,28 +793,101 @@ function Today() {
     return () => document.removeEventListener('keydown', dismiss)
   }, [menuTaskId, editingId, copySourceId])
 
-  async function signOut() {
+  async function completeSignOut() {
     try {
-      const result = await authClient.signOut()
-      if (result.error) throw result.error
+      if (navigator.onLine) {
+        const result = await authClient.signOut()
+        if (result.error) throw result.error
+        localStorage.removeItem(signedOutKey)
+      } else {
+        // The session cookie is HttpOnly. Revoke it on reconnect before allowing another sign-in.
+        localStorage.setItem(signedOutKey, 'pending')
+      }
       localStorage.removeItem(cachedUserKey)
-      void navigate({ to: '/', replace: true })
+      setSignOutPending(null)
+      if (navigator.onLine) void navigate({ to: '/', replace: true })
+      else setSignedOut(true)
     } catch {
+      setSignOutPending(null)
       setSessionError('Could not sign out. Try again.')
     }
   }
 
-  const header = user && <header className="flex min-h-14 items-center justify-between px-5">
-    <span className="whitespace-nowrap text-[22px] font-bold tracking-tight">Habit Tracker</span>
-    <div className="flex items-center gap-2">
-      <Avatar className="size-[34px] border-[1.5px] border-mint bg-mint-surface" aria-label={`${user.name}'s profile`}>
-        {user.image && <AvatarImage src={user.image} alt="" referrerPolicy="no-referrer" />}
-        <AvatarFallback className="bg-mint-surface font-bold text-mint-ink">{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
-      </Avatar>
-      <Button variant="ghost" className="h-11 px-1 text-xs text-muted-foreground hover:text-foreground" type="button" onClick={() => void signOut()}>Sign out</Button>
+  async function signOut() {
+    if (!store || !user) return
+    if (navigator.onLine && !authRequired) {
+      let timeout: number | undefined
+      try {
+        await Promise.race([
+          sync(),
+          new Promise<void>(resolve => { timeout = window.setTimeout(resolve, 2000) }),
+        ])
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+    const [taskState, focusChanges, settingsChanges] = await Promise.all([
+      store.syncState(user.id), focusStore?.pendingChanges(user.id), settingsStore?.pendingCount(user.id),
+    ])
+    const unsent = taskState.pending + (focusChanges?.length ?? 0) + (settingsChanges ?? 0)
+    if (unsent) setSignOutPending(unsent)
+    else await completeSignOut()
+  }
+
+  async function openStatus() {
+    if (authRequired) {
+      const result = await authClient.signIn.social({ provider: 'google', callbackURL: '/today' })
+      if (result.error) setSessionError('Could not start Google sign-in. Try again.')
+    } else setStatusOpen(true)
+  }
+
+  async function updateDurations(next: DurationSettings | ((current: DurationSettings) => DurationSettings)) {
+    if (!settingsStore || !user) throw new Error('Timer settings are still loading.')
+    await settingsStore.update(user.id, next)
+    await refreshPending()
+    void sync()
+  }
+
+  function updatePreferences(next: DevicePreferences) {
+    saveDevicePreferences(next)
+    setPreferences(next)
+    window.dispatchEvent(new Event('habit-tracker:device-preferences'))
+  }
+
+  const signOutPrompt = signOutPending !== null && <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/35">
+    <section role="dialog" aria-modal="true" aria-label="Unsent changes" className="w-full max-w-[414px] rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-5 shadow-xl">
+      <h2 className="font-display text-lg font-bold">Changes waiting to sync</h2>
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{signOutPending} {signOutPending === 1 ? 'change is' : 'changes are'} saved on this device but not on the server. Signing out keeps them here for this Google account. Sign in with the same account to sync them.</p>
+      <Button type="button" onClick={() => void completeSignOut()} className="mt-5 min-h-12 w-full rounded-2xl bg-primary font-bold text-white">Sign out anyway</Button>
+      <button type="button" onClick={() => setSignOutPending(null)} className="mt-2 min-h-11 w-full rounded-xl text-sm font-semibold text-muted-foreground">Keep working</button>
+    </section>
+  </div>
+
+  const header = user && <header className="flex min-h-14 items-center justify-between gap-2 px-5">
+    <span className="min-w-0 truncate whitespace-nowrap font-display text-[22px] font-bold tracking-tight">Habit Tracker</span>
+    <div className="flex shrink-0 items-center gap-2">
+      {status && <button type="button" onClick={() => void openStatus()} className="flex min-h-9 items-center gap-1 rounded-full bg-amber-surface px-2.5 text-[11px] font-semibold text-amber focus-visible:outline-2 focus-visible:outline-amber">
+        <span aria-hidden="true" className="size-1.5 rounded-full bg-amber" />{status}
+      </button>}
+      <button type="button" aria-label={`${user.name}'s profile`} onClick={() => setSettingsOpen(true)} className="grid size-11 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mint">
+        <Avatar className="size-[34px] border-[1.5px] border-mint bg-mint-surface">
+          {user.image && <AvatarImage src={user.image} alt="" referrerPolicy="no-referrer" />}
+          <AvatarFallback className="bg-mint-surface font-bold text-mint-ink">{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
+        </Avatar>
+      </button>
     </div>
   </header>
 
+  if (signedOut) return <SignIn />
+  if (settingsOpen && user) return <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
+    <SettingsScreen user={user} durations={durations} preferences={preferences} wakeSupported={wakeSupported}
+      onDuration={(key, minutes) => updateDurations(current => ({ ...current, [key]: minutes }))} onReset={async () => {
+        try { await updateDurations(defaultDurations); setSessionError('') }
+        catch { setSessionError('Could not reset timer settings on this device.') }
+      }} onPreferences={updatePreferences} onBack={() => setSettingsOpen(false)} onSignOut={() => void signOut()} />
+    {sessionError && <p role="alert" className="px-5 text-xs text-destructive">{sessionError}</p>}
+    {signOutPrompt}
+  </main>
   if (!user || !ready) {
     return (
       <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
@@ -717,13 +915,21 @@ function Today() {
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
       {header}
-      {(pending > 0 || (syncError && (!navigator.onLine || failures.current >= 3))) && (
-        <div className="flex justify-end px-5 pb-1">
-          <button type="button" onClick={() => void sync()} className="rounded-full bg-amber-surface px-2 py-1 text-[11px] font-semibold text-amber">
-            {!navigator.onLine ? 'Offline' : pending > 0 ? `${pending} ${pending === 1 ? 'change' : 'changes'} waiting` : 'Can’t sync'}
-          </button>
-        </div>
-      )}
+      {statusOpen && <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/35" onClick={() => setStatusOpen(false)}>
+        <section role="dialog" aria-modal="true" aria-label="Sync status" onClick={event => event.stopPropagation()} className="w-full max-w-[414px] rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-5 shadow-xl">
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-lg font-bold">Sync status</h2>
+            <button type="button" aria-label="Close sync status" onClick={() => setStatusOpen(false)} className="grid size-10 place-items-center rounded-xl text-muted-foreground"><X size={18} aria-hidden="true" /></button>
+          </div>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {!navigator.onLine ? 'This device is offline. Your changes are saved here and will sync when you reconnect.'
+              : failures.current >= 3 ? 'Your changes are saved on this device, but the server cannot be reached right now. We will keep trying.'
+                : `${pending} ${pending === 1 ? 'change is' : 'changes are'} saved on this device and waiting to sync.`}
+          </p>
+          <Button type="button" disabled={!navigator.onLine} onClick={() => { setStatusOpen(false); void sync() }} className="mt-5 min-h-12 w-full rounded-2xl bg-primary font-bold text-white"><RefreshCw size={16} aria-hidden="true" />Sync now</Button>
+        </section>
+      </div>}
+      {signOutPrompt}
       {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
       {syncNotices.map(notice => <div key={notice.id} role="alert" aria-label="Sync conflict" className="sticky top-0 z-10 mx-5 mb-2 flex items-start justify-between gap-3 rounded-2xl border border-amber bg-amber-surface px-4 py-3 text-sm leading-relaxed text-foreground">
         <p className="min-w-0 break-words">{notice.message}</p>
@@ -742,8 +948,8 @@ function Today() {
           <Card className="items-center gap-4 rounded-[26px] px-5 py-5 text-center shadow-none">
             <div className="relative grid size-[220px] shrink-0 place-items-center">
               <svg viewBox="0 0 220 220" className="absolute inset-0 size-full -rotate-90" aria-hidden="true">
-                <circle cx="110" cy="110" r="95" fill="none" stroke={activeBreak ? '#e5f0fd' : '#e2f5eb'} strokeWidth="12" />
-                <circle cx="110" cy="110" r="95" fill="none" stroke={activeBreak ? '#3282e6' : '#2da46f'} strokeWidth="12" strokeLinecap="round" strokeDasharray={2 * Math.PI * 95} strokeDashoffset={2 * Math.PI * 95 * (activeFocus ? elapsedMs / (activeFocus.plannedMinutes * 60_000) : activeBreak?.phase === 'running' ? 1 - remainingSeconds / (activeBreak.durationMinutes * 60) : 0)} />
+                <circle cx="110" cy="110" r="95" fill="none" stroke={activeBreak ? 'var(--color-sky-surface)' : 'var(--color-mint-surface)'} strokeWidth="12" />
+                <circle cx="110" cy="110" r="95" fill="none" stroke={activeBreak ? 'var(--color-sky)' : 'var(--color-mint)'} strokeWidth="12" strokeLinecap="round" strokeDasharray={2 * Math.PI * 95} strokeDashoffset={2 * Math.PI * 95 * (activeFocus ? elapsedMs / (activeFocus.plannedMinutes * 60_000) : activeBreak?.phase === 'running' ? 1 - remainingSeconds / (activeBreak.durationMinutes * 60) : 0)} />
               </svg>
               <div className="flex flex-col items-center gap-1">
                 <span className="font-display text-[48px] font-extrabold leading-none tracking-[-.05em] tabular-nums" aria-live="off">{clockText}</span>
@@ -766,8 +972,8 @@ function Today() {
                     : `On a ${activeBreak.kind} Break from ${activeBreak.taskTitle || tasks.find(task => task.id === activeBreak.taskId)?.title || 'your Task'}`}
               </h2>
               {activeBreak.phase === 'choice' ? <div className="flex w-full flex-col gap-2">
-                <Button type="button" onClick={() => void chooseBreak('short')} className="min-h-12 rounded-[18px] bg-primary font-bold text-white">Short Break · 5 min</Button>
-                <Button type="button" variant="outline" onClick={() => void chooseBreak('long')} className="min-h-12 rounded-[18px] font-bold">Long Break · 15 min</Button>
+                <Button type="button" onClick={() => void chooseBreak('short')} className="min-h-12 rounded-[18px] bg-primary font-bold text-white">Short Break · {activeBreak.shortBreakMinutes} min</Button>
+                <Button type="button" variant="outline" onClick={() => void chooseBreak('long')} className="min-h-12 rounded-[18px] font-bold">Long Break · {activeBreak.longBreakMinutes} min</Button>
                 <button type="button" onClick={() => void skipBreak()} className="min-h-11 text-sm font-semibold text-muted-foreground">No Break</button>
               </div> : activeBreak.phase === 'running' ? <Button type="button" variant="outline" onClick={() => void skipBreak()} className="min-h-12 w-full rounded-[18px] font-bold">Skip Break</Button>
                 : <div className="flex w-full flex-col gap-2">
@@ -786,12 +992,6 @@ function Today() {
               {!connected && <p role="status" className="text-xs font-semibold text-amber">Connect to the internet to start a session.</p>}
             </>}
           </Card>
-          <div className="flex items-center justify-between gap-3 px-2 pt-3 text-xs text-muted-foreground">
-            <span>Keep screen awake</span>
-            <button type="button" aria-label="Keep screen awake" aria-pressed={wakeSupported ? wakeEnabled : undefined} disabled={!wakeSupported} onClick={() => setWakeEnabled(value => !value)} className="min-h-10 rounded-xl border border-border px-3 font-semibold text-foreground disabled:cursor-not-allowed disabled:opacity-55">
-              {wakeSupported ? wakeEnabled ? 'On' : 'Off' : 'Not supported on this device'}
-            </button>
-          </div>
         </section>
         {!activeFocus && !activeBreak && <section aria-labelledby="task-list-heading" className="flex flex-col gap-2">
           <h2 id="task-list-heading" className="text-[13px] font-bold text-muted-foreground">Focus on</h2>

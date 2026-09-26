@@ -111,7 +111,7 @@ database.pragma('journal_mode = WAL')
 database.pragma('foreign_keys = ON')
 
 const version = database.pragma('user_version', { simple: true }) as number
-if (version > 5) throw new Error(`Unsupported SQLite schema version ${version}`)
+if (version > 6) throw new Error(`Unsupported SQLite schema version ${version}`)
 
 if (version < 4) {
   database.transaction(() => {
@@ -140,3 +140,53 @@ if (version < 5) {
     database.pragma('user_version = 5')
   })()
 }
+
+export function migrateSettingsSchema(target: Database.Database): void {
+  target.transaction(() => {
+    target.exec(`
+      CREATE TABLE active_session_v6 (
+        userId text not null primary key references "user" ("id") on delete cascade,
+        id text not null unique,
+        taskId text not null references task (id) on delete cascade,
+        day text not null,
+        plannedMinutes integer not null check (plannedMinutes between 1 and 120),
+        shortBreakMinutes integer not null check (shortBreakMinutes between 1 and 30),
+        longBreakMinutes integer not null check (longBreakMinutes between 1 and 60),
+        status text not null check (status in ('running', 'paused')),
+        startedAt text not null,
+        elapsedMs integer not null check (elapsedMs >= 0),
+        segmentStartedAt text,
+        lastControlAt text not null,
+        check ((status = 'running' and segmentStartedAt is not null)
+          or (status = 'paused' and segmentStartedAt is null))
+      );
+      INSERT INTO active_session_v6
+        (userId, id, taskId, day, plannedMinutes, shortBreakMinutes, longBreakMinutes,
+          status, startedAt, elapsedMs, segmentStartedAt, lastControlAt)
+        SELECT userId, id, taskId, day, plannedMinutes, 5, 15,
+          status, startedAt, elapsedMs, segmentStartedAt, lastControlAt
+        FROM active_session;
+      DROP TABLE active_session;
+      ALTER TABLE active_session_v6 RENAME TO active_session;
+
+      CREATE TABLE duration_settings (
+        userId text not null primary key references "user" ("id") on delete cascade,
+        focusMinutes integer not null check (focusMinutes between 1 and 120),
+        shortBreakMinutes integer not null check (shortBreakMinutes between 1 and 30),
+        longBreakMinutes integer not null check (longBreakMinutes between 1 and 60),
+        seq integer not null
+      );
+      CREATE TABLE settings_change_receipt (
+        seq integer primary key autoincrement,
+        userId text not null references "user" ("id") on delete cascade,
+        id text not null,
+        request text not null,
+        unique (userId, id)
+      );
+      CREATE INDEX settings_change_receipt_user_seq_idx ON settings_change_receipt (userId, seq);
+    `)
+    target.pragma('user_version = 6')
+  }).immediate()
+}
+
+if (version < 6) migrateSettingsSchema(database)

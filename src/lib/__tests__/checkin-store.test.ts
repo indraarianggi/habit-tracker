@@ -190,7 +190,7 @@ test('Session receipt remaps queued edits and deletions without resurrecting pro
   const userId = 'test-user'
   const today = task(userId)
   const past = task(userId, '2020-01-01')
-  const session: SessionRecord = { id: uuidv7(), userId, taskId: today.id, day: today.day, plannedMinutes: 25, status: 'running', startedAt: new Date().toISOString(), elapsedMs: 0, segmentStartedAt: new Date().toISOString() }
+  const session: SessionRecord = { id: uuidv7(), userId, taskId: today.id, day: today.day, plannedMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15, status: 'running', startedAt: new Date().toISOString(), elapsedMs: 0, segmentStartedAt: new Date().toISOString() }
   try {
     await store.started(userId, session)
     await store.finish(userId, 'finish')
@@ -215,7 +215,7 @@ test('deleting a provisional Session Check-in before its receipt never recreates
   const userId = 'test-user'
   const selected = task(userId)
   const session: SessionRecord = {
-    id: uuidv7(), userId, taskId: selected.id, day: selected.day, plannedMinutes: 25,
+    id: uuidv7(), userId, taskId: selected.id, day: selected.day, plannedMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15,
     status: 'running', startedAt: new Date().toISOString(), elapsedMs: 0, segmentStartedAt: new Date().toISOString(),
   }
   try {

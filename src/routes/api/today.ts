@@ -11,6 +11,7 @@ export const Route = createFileRoute('/api/today')({
           user: {
             id: session.user.id,
             name: session.user.name,
+            email: session.user.email,
             image: session.user.image,
           },
         }, { headers: { 'Cache-Control': 'private, no-store' } })

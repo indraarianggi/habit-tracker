@@ -46,6 +46,8 @@ test('each session opens only its own private Today on mobile', async ({ browser
       const bobResponse = await bobContext.request.get('/api/today')
       expect(await bobResponse.json()).toMatchObject({ user: { id: bob.id, name: 'Bob' } })
 
+      await alicePage.getByRole('button', { name: "Alice's profile" }).click()
+      await expect(alicePage.getByRole('heading', { name: 'Settings' })).toBeVisible()
       await alicePage.getByRole('button', { name: 'Sign out' }).click()
       await expect(alicePage.getByRole('button', { name: /sign in with google/i })).toBeVisible()
       expect((await aliceContext.request.get('/api/today')).status()).toBe(401)
@@ -70,6 +72,7 @@ test('signed-in Today keeps Sign out available when initial Task sync fails', as
     await page.route('**/api/sync/pull?*', route => route.abort())
     await page.goto('/today')
     await expect(page.getByText('Connect to the internet to load your data.')).toBeVisible()
+    await page.getByRole('button', { name: `${user.name}'s profile` }).click()
     await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
   } finally {
     await context.close()

@@ -56,6 +56,9 @@ export const Route = createFileRoute('/api/session/finish')({
       POST: async ({ request }) => {
         const login = await auth.api.getSession({ headers: request.headers })
         if (!login) return Response.json({ error: 'Unauthorized' }, { status: 401, headers: noCache })
+        if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== login.user.id) {
+          return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
+        }
         let body: unknown
         try { body = await request.json() } catch {
           return Response.json({ error: 'Malformed JSON' }, { status: 400, headers: noCache })

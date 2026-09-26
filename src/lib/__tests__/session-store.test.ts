@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { betterAuth } from 'better-auth'
 import { testUtils } from 'better-auth/plugins'
+import Dexie from 'dexie'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { v7 as uuidv7 } from 'uuid'
 import { elapsedFocusMs, remainingBreakSeconds, SessionStore } from '@/lib/session-store'
@@ -137,7 +138,7 @@ test('break choices use wall-clock deadlines, can be skipped, and never add focu
   const start = new Date('2026-09-24T12:00:00.000Z')
   try {
     await focus.started(userId, {
-      id: sessionId, userId, taskId, day: '2026-09-24', plannedMinutes: 25,
+      id: sessionId, userId, taskId, day: '2026-09-24', plannedMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15,
       status: 'running', startedAt: start.toISOString(), elapsedMs: 0, segmentStartedAt: start.toISOString(),
     })
     await focus.finish(userId, 'finish', undefined, new Date(start.getTime() + 25 * 60_000), 'Restored Task')
@@ -153,7 +154,7 @@ test('break choices use wall-clock deadlines, can be skipped, and never add focu
     expect((await focus.snapshot(userId)).break).toBeNull()
     expect((await focus.snapshot(userId)).checkins.map(checkin => checkin.durationMinutes)).toEqual([25])
     await focus.started(userId, {
-      id: uuidv7(), userId, taskId, day: '2026-09-24', plannedMinutes: 25,
+      id: uuidv7(), userId, taskId, day: '2026-09-24', plannedMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15,
       status: 'running', startedAt: start.toISOString(), elapsedMs: 0, segmentStartedAt: start.toISOString(),
     })
     await focus.finish(userId, 'finish')
@@ -161,6 +162,45 @@ test('break choices use wall-clock deadlines, can be skipped, and never add focu
     expect((await focus.snapshot(userId)).break).toMatchObject({ kind: 'long', durationMinutes: 15 })
     await focus.clearBreak(userId)
     expect((await focus.snapshot(userId)).break).toBeNull()
+  } finally {
+    focus.close()
+  }
+})
+
+test('opening a pre-settings focus database preserves an active Session and Break choice', async () => {
+  const factory = new IDBFactory()
+  const name = `legacy-focus-${crypto.randomUUID()}`
+  const legacy = new Dexie(name, { indexedDB: factory, IDBKeyRange })
+  legacy.version(1).stores({ state: 'userId', checkins: '[userId+id], [userId+sourceSessionId]', pending: '++id, userId' })
+  const runningUser = crypto.randomUUID()
+  const choiceUser = crypto.randomUUID()
+  const start = '2026-09-24T12:00:00.000Z'
+  const sessionId = uuidv7()
+  await legacy.table('state').bulkPut([
+    { userId: runningUser, lastTaskId: 'task-1', session: {
+      id: sessionId, userId: runningUser, taskId: 'task-1', day: '2026-09-24',
+      plannedMinutes: 25, status: 'running', startedAt: start, elapsedMs: 0, segmentStartedAt: start,
+    } },
+    { userId: choiceUser, lastTaskId: 'task-2', session: null, break: {
+      phase: 'choice', taskId: 'task-2', taskTitle: 'Legacy Task',
+      sourceSessionId: uuidv7(), plannedMinutes: 25,
+    } },
+  ])
+  legacy.close()
+  const focus = new SessionStore(name, factory, IDBKeyRange)
+  try {
+    expect((await focus.snapshot(runningUser)).session).toMatchObject({
+      id: sessionId, status: 'running', plannedMinutes: 25,
+      shortBreakMinutes: 5, longBreakMinutes: 15,
+    })
+    expect((await focus.snapshot(choiceUser)).break).toMatchObject({
+      phase: 'choice', shortBreakMinutes: 5, longBreakMinutes: 15,
+    })
+    await focus.finish(runningUser, 'finish', undefined, new Date('2026-09-24T12:25:00.000Z'))
+    await focus.startBreak(runningUser, 'short')
+    await focus.startBreak(choiceUser, 'long')
+    expect((await focus.snapshot(runningUser)).break).toMatchObject({ phase: 'running', durationMinutes: 5 })
+    expect((await focus.snapshot(choiceUser)).break).toMatchObject({ phase: 'running', durationMinutes: 15 })
   } finally {
     focus.close()
   }

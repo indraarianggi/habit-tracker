@@ -16,9 +16,10 @@ Every `package.json` entry is exact-pinned and the lockfile is consumed `--froze
 
 `src/server/auth.ts` works at import time: it validates `BETTER_AUTH_URL` / `BETTER_AUTH_SECRET` / `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, opens SQLite at `DATABASE_PATH` (WAL, foreign keys), runs the auth migration, and exports `authOptions` carrying the live `database`. Importing it requires those env vars and touches the database file; the Playwright config sets them before workers import (see `testing.md`).
 
+Schema migrations are ordered in `src/server/db.ts` under SQLite `user_version` (currently 6). Add a transactional migration there, retaining existing records and foreign-key references; the application runs it on startup before handling requests.
+
 Open items to respect when touching this area:
 
-- **Migration ownership**: `user_version` is per-database, and `migrateAuth` (`src/server/auth-schema.ts`) throws above version 1. The first app-table migration (Tasks, Check-ins) must first move schema migration to a single owner — an ordered migration list in a `src/server/db.ts` — or server startup crashes on the bump. ADR-0002 already commits to migrations running at app start.
 - **Production URL scheme**: `BETTER_AUTH_URL` accepts `http://` today; requiring `https://` outside localhost is an open hardening item.
 - **Error states**: keep the app shell mounted when a fetch or sign-out fails — render the error inline instead of unmounting the header and its Sign out control. `src/routes/today.tsx` currently replaces the whole page on error; fix that flow when touching it.
 

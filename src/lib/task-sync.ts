@@ -2,6 +2,12 @@ import { pullResponseSchema, pushRequestSchema, pushResponseSchema } from '@/lib
 import { type TaskStore } from '@/lib/task-store'
 
 const PAGE_SIZE = 100
+export class SyncAuthError extends Error {
+  constructor(readonly status: number) {
+    super('Sign in to sync')
+  }
+}
+
 
 export async function syncTasks(
   store: TaskStore,
@@ -22,9 +28,10 @@ export async function syncTasks(
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Local-User': userId },
       body: JSON.stringify(request),
     })
+    if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
     if (!response.ok) throw new Error(`Task push failed (${response.status}).`)
 
     const { results } = pushResponseSchema.parse(await response.json())
@@ -46,7 +53,9 @@ export async function syncTasks(
     const response = await fetcher(`/api/sync/pull?${query}`, {
       credentials: 'same-origin',
       cache: 'no-store',
+      headers: { 'X-Local-User': userId },
     })
+    if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
     if (!response.ok) throw new Error(`Task pull failed (${response.status}).`)
 
     const page = pullResponseSchema.parse(await response.json())

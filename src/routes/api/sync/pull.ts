@@ -30,6 +30,9 @@ export const Route = createFileRoute('/api/sync/pull')({
       GET: async ({ request }) => {
         const session = await auth.api.getSession({ headers: request.headers })
         if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401, headers: noCache })
+        if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== session.user.id) {
+          return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
+        }
 
         const url = new URL(request.url)
         const afterInput = url.searchParams.get('after') ?? '0'

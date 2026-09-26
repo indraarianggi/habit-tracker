@@ -6,7 +6,9 @@ export const sessionRecordSchema = z.strictObject({
   userId: z.string().min(1),
   taskId: z.uuidv7(),
   day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  plannedMinutes: z.number().int().positive(),
+  plannedMinutes: z.number().int().min(1).max(120),
+  shortBreakMinutes: z.number().int().min(1).max(30),
+  longBreakMinutes: z.number().int().min(1).max(60),
   status: z.enum(['running', 'paused']),
   startedAt: z.iso.datetime(),
   elapsedMs: z.number().int().nonnegative(),
@@ -35,7 +37,7 @@ export const startSessionSchema = z.strictObject({
   id: z.uuidv7(),
   taskId: z.uuidv7(),
   day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  plannedMinutes: z.literal(25),
+  plannedMinutes: z.number().int().min(1).max(120),
 })
 export const controlSessionSchema = z.strictObject({
   id: z.uuidv7(),

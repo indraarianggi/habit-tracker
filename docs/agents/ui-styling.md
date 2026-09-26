@@ -4,11 +4,11 @@ Rules for any change that renders or restyles a screen: `src/routes/*.tsx`, `src
 
 ## Stack
 
-Styling is Tailwind CSS v4 utilities in `className`. `src/styles.css` holds exactly four things: the `tailwindcss` import (always the first line — CSS requires every `@import` before other rules), the font imports, the `@theme` token block, and the base layer (tap-highlight, body colors, `touch-action`). That list is complete; a new page-level CSS class belongs in utilities instead.
+Styling is Tailwind CSS v4 utilities in `className`. `src/styles.css` holds the `tailwindcss` import (first), font imports, `@theme` tokens, and base layer (including the dark token overrides, tap-highlight, body colors, `touch-action`). A new page-level CSS class belongs in utilities instead.
 
 Components come from shadcn/ui: primitives live in `src/components/ui/` (button, card, avatar), added with `pnpm dlx shadcn@latest add <name>`. After each add:
 
-1. Strip the registry's `dark:` utilities (light-only, below).
+1. Remove hard-coded `dark:` utilities when token-based colors already cover both themes; preserve necessary stateful behavior.
 2. Keep `src/lib/utils.ts` — the `cn` re-export — so both `cn` and `@/lib/utils` imports resolve.
 3. `pnpm run typecheck` passes with the new primitive imported somewhere real.
 
@@ -18,9 +18,9 @@ Components come from shadcn/ui: primitives live in `src/components/ui/` (button,
 
 Fonts: `font-display` = Plus Jakarta Sans (headlines), `font-sans` = IBM Plex Sans (body, data, feature lists).
 
-## Light-only
+## Device appearance
 
-The app ships light mode only. Registry primitives arrive with `dark:` utilities wired to `prefers-color-scheme`; delete them on add so a dark-mode phone never restyles a screen. Introducing a theme is an operator design decision, never a default refactor.
+Settings offers System, Light, and Dark per device. `src/lib/device-preferences.ts` persists the choice locally; `src/routes/__root.tsx` resolves System against `prefers-color-scheme` and sets `data-theme` on `<html>`. Dark colors override the shared `--color-*` tokens in `src/styles.css`, so existing Tailwind utilities follow the selected theme without separate `dark:` copies. New UI must remain legible in both themes.
 
 ## Design source and accepted deviations
 
@@ -34,7 +34,7 @@ When the operator accepts a screen that differs from the pen file, record it her
 
 - Today centers in a `max-w-[414px]` column; sign-in uses `max-w-[30rem]`; privacy uses `max-w-3xl`.
 - Phone-specific adjustments use the `max-[480px]:` breakpoint, matching the existing screens.
-- The root viewport is `viewport-fit=cover` with `theme-color #f8f6f1`; bottom bars pad with `env(safe-area-inset-bottom)`.
+- The root viewport is `viewport-fit=cover`; `theme-color` tracks the selected theme (`#f8f6f1` light, `#141b1b` dark); bottom bars pad with `env(safe-area-inset-bottom)`.
 
 ## Done means seen
 

@@ -1,10 +1,11 @@
 import Dexie, { type Table } from 'dexie'
 import { v7 as uuidv7 } from 'uuid'
 import { checkinChangeSchema, type CheckinChangeRequest, type CheckinRecord, type SessionRecord } from '@/lib/session-contract'
+import { defaultDurations } from '@/lib/settings-contract'
 import { localDay, taskRecordSchema, type TaskRecord } from '@/lib/task-contract'
 
 export type BreakState =
-  | { phase: 'choice'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number }
+  | { phase: 'choice'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number; shortBreakMinutes: number; longBreakMinutes: number }
   | { phase: 'running' | 'ended'; taskId: string; taskTitle: string; sourceSessionId: string; plannedMinutes: number; kind: 'short' | 'long'; durationMinutes: number; startedAt: string }
 type FocusState = { userId: string; session: SessionRecord | null; lastTaskId: string | null; sessionTaskTitle?: string; break?: BreakState | null }
 type PendingControl = { id?: number; userId: string; sessionId: string; action: 'pause' | 'resume'; at: string }
@@ -48,7 +49,18 @@ class FocusDatabase extends Dexie {
 
   constructor(name: string, indexedDB?: IDBFactory, IDBKeyRange?: typeof globalThis.IDBKeyRange) {
     super(name, { ...(indexedDB ? { indexedDB } : {}), ...(IDBKeyRange ? { IDBKeyRange } : {}) })
-    this.version(1).stores({ state: 'userId', checkins: '[userId+id], [userId+sourceSessionId]', pending: '++id, userId' })
+    const stores = { state: 'userId', checkins: '[userId+id], [userId+sourceSessionId]', pending: '++id, userId' }
+    this.version(1).stores(stores)
+    this.version(2).stores(stores).upgrade(transaction => transaction.table('state').toCollection().modify((state: FocusState) => {
+      if (state.session) {
+        state.session.shortBreakMinutes ??= defaultDurations.shortBreakMinutes
+        state.session.longBreakMinutes ??= defaultDurations.longBreakMinutes
+      }
+      if (state.break?.phase === 'choice') {
+        state.break.shortBreakMinutes ??= defaultDurations.shortBreakMinutes
+        state.break.longBreakMinutes ??= defaultDurations.longBreakMinutes
+      }
+    }))
   }
 }
 
@@ -99,7 +111,7 @@ export class SessionStore {
       }
       await this.db.pending.add({ userId, sessionId: session.id, outcome, provisionalCheckinId, ...(outcome === 'save' ? { durationMinutes: minutes } : {}) })
       await this.db.state.put({ userId, session: null, lastTaskId: session.taskId,
-        break: outcome === 'finish' ? { phase: 'choice', taskId: session.taskId, taskTitle: state?.sessionTaskTitle || taskTitle, sourceSessionId: session.id, plannedMinutes: session.plannedMinutes } : null })
+        break: outcome === 'finish' ? { phase: 'choice', taskId: session.taskId, taskTitle: state?.sessionTaskTitle || taskTitle, sourceSessionId: session.id, plannedMinutes: session.plannedMinutes, shortBreakMinutes: session.shortBreakMinutes, longBreakMinutes: session.longBreakMinutes } : null })
     })
   }
 
@@ -109,7 +121,7 @@ export class SessionStore {
       if (!state || state.session || state.break?.phase !== 'choice') throw new Error('Break choice is no longer available.')
       await this.db.state.put({ ...state, break: {
         phase: 'running', taskId: state.break.taskId, taskTitle: state.break.taskTitle, sourceSessionId: state.break.sourceSessionId, plannedMinutes: state.break.plannedMinutes,
-        kind, durationMinutes: kind === 'short' ? 5 : 15, startedAt: now.toISOString(),
+        kind, durationMinutes: kind === 'short' ? state.break.shortBreakMinutes : state.break.longBreakMinutes, startedAt: now.toISOString(),
       } })
     })
   }

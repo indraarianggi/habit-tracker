@@ -8,7 +8,8 @@ const noCache = { 'Cache-Control': 'private, no-store' }
 type ActiveRow = SessionRecord & { lastControlAt: string }
 type ControlResult = { session: SessionRecord } | { error: string; status: number }
 const active = database.prepare(`
-  SELECT id, userId, taskId, day, plannedMinutes, status, startedAt, elapsedMs, segmentStartedAt, lastControlAt
+  SELECT id, userId, taskId, day, plannedMinutes, shortBreakMinutes, longBreakMinutes,
+    status, startedAt, elapsedMs, segmentStartedAt, lastControlAt
   FROM active_session WHERE id = ? AND userId = ?
 `)
 const update = database.prepare(`
@@ -49,6 +50,9 @@ export const Route = createFileRoute('/api/session/control')({
       POST: async ({ request }) => {
         const login = await auth.api.getSession({ headers: request.headers })
         if (!login) return Response.json({ error: 'Unauthorized' }, { status: 401, headers: noCache })
+        if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== login.user.id) {
+          return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
+        }
         let body: unknown
         try { body = await request.json() } catch {
           return Response.json({ error: 'Malformed JSON' }, { status: 400, headers: noCache })
