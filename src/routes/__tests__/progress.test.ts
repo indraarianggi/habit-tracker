@@ -1,0 +1,107 @@
+import { expect, test, type Locator } from '@playwright/test'
+import { betterAuth } from 'better-auth'
+import { testUtils } from 'better-auth/plugins'
+import { authOptions } from '@/server/auth'
+
+const testAuth = betterAuth({ ...authOptions, plugins: [testUtils()] })
+async function cellColors(cell: Locator) {
+  return cell.evaluate(element => {
+    const style = getComputedStyle(element)
+    return { background: style.backgroundColor, text: style.color }
+  })
+}
+function contrast(a: string, b: string): number {
+  const luminance = (color: string) => {
+    const values = color.match(/\d+/g)!.slice(0, 3).map(value => Number(value) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2]
+  }
+  const x = luminance(a), y = luminance(b)
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)
+}
+
+test('Progress grid supports keyboard, touch, theme and immediate Check-in corrections', async ({ browser }) => {
+  const helpers = (await testAuth.$context).test
+  const user = helpers.createUser({ email: `progress-browser-${crypto.randomUUID()}@invalid.test` })
+  await helpers.saveUser(user)
+  const context = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true })
+  try {
+    await context.addCookies(await helpers.getCookies({ userId: user.id, domain: '127.0.0.1' }))
+    const page = await context.newPage()
+    await page.goto('/today')
+    await expect(page.getByRole('textbox', { name: 'New Task' })).toBeVisible()
+    await context.setOffline(true)
+    await page.getByRole('button', { name: 'Progress', exact: true }).click()
+    const grid = page.getByRole('grid', { name: 'Activity Grid' })
+    await expect(grid).toBeVisible()
+    await expect(page.getByText('Create your first Task for Today.')).toBeVisible()
+    const zeroLight = await cellColors(grid.locator('[role="gridcell"]').first())
+    expect(zeroLight.background).toMatch(/^rgb\(/)
+    expect(contrast(zeroLight.background, zeroLight.text)).toBeGreaterThanOrEqual(4.5)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.getByRole('textbox', { name: 'New Task' }).fill('Read a chapter')
+    await page.getByRole('textbox', { name: 'New Task' }).press('Enter')
+    await expect(page.getByText('Your first Check-in will light up today.')).toBeVisible()
+    const today = page.locator('[role="gridcell"][aria-current="date"]')
+    await expect(today).toHaveAttribute('tabindex', '0')
+    await today.focus()
+    await expect(page.getByRole('status', { name: 'Day preview' })).toContainText('0 minutes, 0 Check-ins, 0 of 1 Tasks completed')
+    await today.press('ArrowLeft')
+    const previous = page.locator('[role="gridcell"][tabindex="0"]')
+    await expect(previous).not.toHaveAttribute('aria-current', 'date')
+    await previous.press('End')
+    await page.locator('[role="gridcell"][tabindex="0"]').press('Enter')
+    await expect(page.getByRole('dialog', { name: 'Day details' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Close Day details' })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: 'Day details' })).toHaveCount(0)
+    await expect(page.locator('[role="gridcell"][tabindex="0"]')).toBeFocused()
+    await page.locator('[role="gridcell"][tabindex="0"]').press('Space')
+    await expect(page.getByRole('dialog', { name: 'Day details' })).toBeVisible()
+    await page.getByRole('button', { name: 'Close Day details' }).click()
+    const hit = await today.boundingBox()
+    expect(hit).not.toBeNull()
+    await page.touchscreen.tap(hit!.x + hit!.width / 2, hit!.y - 0.5)
+    await expect(page.getByRole('dialog', { name: 'Day details' })).toContainText('Read a chapter')
+    await page.getByRole('dialog', { name: 'Day details' }).getByRole('button', { name: 'Add Check-in' }).click()
+    const sheet = page.getByRole('dialog', { name: 'Add Check-in' })
+    await sheet.getByLabel('Focused minutes').fill('31')
+    await sheet.getByRole('button', { name: 'Save Check-in' }).click()
+    await expect(page.getByText('31 min', { exact: true }).first()).toBeVisible()
+    await expect(today).toHaveAttribute('aria-label', /31 minutes, 1 Check-in/)
+    await page.getByRole('button', { name: 'Edit Check-in for Read a chapter' }).click()
+    const edit = page.getByRole('dialog', { name: 'Edit Check-in' })
+    await edit.getByLabel('Focused minutes').fill('12')
+    await edit.getByRole('button', { name: 'Save changes' }).click()
+    await expect(today).toHaveAttribute('aria-label', /12 minutes, 1 Check-in/)
+    const activeLight = await cellColors(today)
+    expect(contrast(zeroLight.background, activeLight.background)).toBeGreaterThanOrEqual(3)
+    expect(contrast(activeLight.background, activeLight.text)).toBeGreaterThanOrEqual(4.5)
+    await page.getByRole('button', { name: '6 mo' }).click()
+    await expect(page.getByText('Last 6 months', { exact: true }).first()).toBeVisible()
+    await grid.locator('[role="gridcell"]').first().click()
+    await page.getByRole('button', { name: 'Close Day details' }).click()
+    await page.getByRole('button', { name: '3 mo' }).click()
+    await expect(page.getByRole('heading', { name: /^Today ·/ })).toBeVisible()
+    await page.getByRole('button', { name: '6 mo' }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.setViewportSize({ width: 320, height: 640 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.setViewportSize({ width: 1024, height: 768 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.getByRole('button', { name: `${user.name}'s profile` }).click()
+    await page.getByText('Dark', { exact: true }).click()
+    await page.getByRole('button', { name: 'Back', exact: true }).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(grid).toBeVisible()
+    const zeroDark = await cellColors(grid.locator('[role="gridcell"]').first())
+    const activeDark = await cellColors(today)
+    expect(contrast(zeroDark.background, activeDark.background)).toBeGreaterThanOrEqual(3)
+    expect(contrast(zeroDark.background, zeroDark.text)).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(activeDark.background, activeDark.text)).toBeGreaterThanOrEqual(4.5)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  } finally {
+    await context.close()
+    await helpers.deleteUser(user.id)
+  }
+})

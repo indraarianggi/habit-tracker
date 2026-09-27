@@ -1,14 +1,16 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { liveQuery } from 'dexie'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, Trash2, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, Flame, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { authClient } from '@/auth-client'
 import { SignIn } from '@/components/sign-in'
 import { SettingsScreen } from '@/components/settings-screen'
+import { ProgressScreen } from '@/components/progress-screen'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DEVICE_PREFERENCES_KEY, readDevicePreferences, saveDevicePreferences, type DevicePreferences } from '@/lib/device-preferences'
+import { buildProgress } from '@/lib/progress'
 import { localDay, type TaskRecord } from '@/lib/task-contract'
 import { chooseTimerTask, type CheckinRecord, type SessionRecord } from '@/lib/session-contract'
 import { startSession, syncSession } from '@/lib/session-client'
@@ -105,7 +107,7 @@ function Today() {
   const [title, setTitle] = useState('')
   const [titleError, setTitleError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [view, setView] = useState<'timer' | 'tasks'>('timer')
+  const [view, setView] = useState<'timer' | 'tasks' | 'progress'>('timer')
   const [selectedDay, setSelectedDay] = useState(localDay)
   const [weekDays, setWeekDays] = useState<string[]>([])
   const [copySourceId, setCopySourceId] = useState<string | null>(null)
@@ -130,7 +132,7 @@ function Today() {
   const status = authRequired ? 'Sign in to sync' : !connected ? 'Offline'
     : failures.current >= 3 ? "Can't sync"
       : pending > 0 ? `${pending} ${pending === 1 ? 'change' : 'changes'} waiting` : null
-  const displayedDay = view === 'tasks' ? selectedDay : day
+  const displayedDay = view === 'timer' ? day : selectedDay
   const menuTask = tasks.find(task => task.id === menuTaskId)
   const editingTask = tasks.find(task => task.id === editingId)
   const copySource = tasks.find(task => task.id === copySourceId)
@@ -151,6 +153,7 @@ function Today() {
   const minutesForTask = (taskId: string) => todayCheckins.reduce((sum, checkin) => sum + (checkin.taskId === taskId ? checkin.durationMinutes : 0), 0)
   const editingCheckin = checkinEditor?.mode === 'edit' ? focus.checkins.find(checkin => checkin.id === checkinEditor.id) : null
   const selectedCheckinTask = eligibleTasks.find(task => task.id === checkinTaskId)
+  const allTimeProgress = useMemo(() => buildProgress(eligibleTasks, focus.checkins, day, 3), [eligibleTasks, focus.checkins, day])
 
   useEffect(() => {
     const instance = new TaskStore()
@@ -869,6 +872,7 @@ function Today() {
       {status && <button type="button" onClick={() => void openStatus()} className="flex min-h-9 items-center gap-1 rounded-full bg-amber-surface px-2.5 text-[11px] font-semibold text-amber focus-visible:outline-2 focus-visible:outline-amber">
         <span aria-hidden="true" className="size-1.5 rounded-full bg-amber" />{status}
       </button>}
+      <span aria-label={`Current Focus Streak: ${allTimeProgress.streaks.current} days, all-time`} className="inline-flex min-h-8 items-center gap-1 rounded-full bg-mint-surface px-2 text-xs font-bold text-mint-ink"><Flame size={14} aria-hidden="true" />{allTimeProgress.streaks.current}</span>
       <button type="button" aria-label={`${user.name}'s profile`} onClick={() => setSettingsOpen(true)} className="grid size-11 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mint">
         <Avatar className="size-[34px] border-[1.5px] border-mint bg-mint-surface">
           {user.image && <AvatarImage src={user.image} alt="" referrerPolicy="no-referrer" />}
@@ -942,7 +946,7 @@ function Today() {
       {activeBreak?.phase === 'ended' && <div role="alert" aria-label="Break is over!" className="mx-5 rounded-2xl border border-sky bg-sky-surface px-4 py-3 text-sm font-semibold text-sky">
         Break is over! Choose when to start your next Session.
       </div>}
-      <h1 className="sr-only">{view === 'tasks' ? 'Tasks' : 'Today'}</h1>
+      <h1 className="sr-only">{view === 'tasks' ? 'Tasks' : view === 'progress' ? 'Progress' : 'Today'}</h1>
       {view === 'timer' ? <div className="flex flex-1 flex-col gap-4 px-5 py-5">
         <section aria-labelledby="timer-heading">
           <Card className="items-center gap-4 rounded-[26px] px-5 py-5 text-center shadow-none">
@@ -1023,7 +1027,7 @@ function Today() {
             ))}
           </Card>
         </section>
-      </div> : <div className="flex flex-1 flex-col gap-3 px-4 py-3">
+      </div> : view === 'progress' ? <ProgressScreen tasks={tasks} allTasks={eligibleTasks} checkins={focus.checkins} today={day} selectedDay={selectedDay} onSelectDay={selectDay} title={title} titleError={titleError} onTitle={value => { setTitle(value); setTitleError('') }} onAddTask={event => void addTask(event)} onAddCheckin={() => openCheckin()} onEditCheckin={openCheckin} /> : <div className="flex flex-1 flex-col gap-3 px-4 py-3">
         <section aria-label="Choose a Day" className="rounded-[22px] border border-border bg-card p-3">
           <div className="flex items-center justify-between px-1 pb-2">
             <button type="button" aria-label="Previous week" onClick={() => selectDay(shiftDay(selectedDay, -7))} className="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-mint"><ChevronLeft size={18} aria-hidden="true" /></button>
@@ -1075,7 +1079,7 @@ function Today() {
       <nav className="sticky bottom-0 flex min-h-[72px] items-center justify-around border-t border-border bg-card px-4 py-2 pb-[max(8px,env(safe-area-inset-bottom))]" aria-label="Main sections">
         <button type="button" onClick={() => setView('timer')} aria-current={view === 'timer' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'timer' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><Timer size={20} aria-hidden="true" />Timer</button>
         <button type="button" onClick={() => setView('tasks')} aria-current={view === 'tasks' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'tasks' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><SquareCheck size={20} aria-hidden="true" />Tasks</button>
-        <span className="flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-medium text-muted-foreground opacity-65" aria-disabled="true" title="Progress is coming in a later update"><LayoutGrid size={20} aria-hidden="true" />Progress</span>
+        <button type="button" onClick={() => setView('progress')} aria-current={view === 'progress' ? 'page' : undefined} className={`flex h-[52px] w-20 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] ${view === 'progress' ? 'bg-mint-surface font-bold text-mint' : 'text-muted-foreground'}`}><LayoutGrid size={20} aria-hidden="true" />Progress</button>
       </nav>
       {(menuTask || editingTask || copySource || deletingTask) && <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/35" onClick={() => { setMenuTaskId(null); setEditingId(null); setCopySourceId(null); setDeletingId(null); setActionError('') }}>
         <section role="dialog" aria-modal="true" aria-label={deletingTask ? `Delete ${deletingTask.title}` : copySource ? `Copy ${copySource.title}` : editingTask ? `Rename ${editingTask.title}` : `Actions for ${menuTask?.title}`} onClick={event => event.stopPropagation()} className="max-h-[90svh] w-full max-w-[414px] overflow-y-auto rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">

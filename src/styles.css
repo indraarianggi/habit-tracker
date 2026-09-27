@@ -70,10 +70,26 @@
     --color-amber-surface: #493b26;
     --color-sky: #90bfff;
     --color-sky-surface: #27384b;
+    --color-grid-0: #162c24;
+    --color-grid-1: #73b18b;
+    --color-grid-2: #91c6a2;
+    --color-grid-3: #b4dec0;
+    --color-grid-4: #d5f0db;
   }
   html {
     -webkit-tap-highlight-color: transparent;
     -webkit-text-size-adjust: 100%;
+    /* Inline grid cell styles need these variables even when Tailwind emits no utility. */
+    --color-grid-0: #35443d;
+    --color-grid-1: #a3d1b3;
+    --color-grid-2: #b9dec5;
+    --color-grid-3: #d1ead7;
+    --color-grid-4: #e5f4e8;
+    --color-grid-text-0: #ffffff;
+    --color-grid-text-1: #10281e;
+    --color-grid-text-2: #10281e;
+    --color-grid-text-3: #10281e;
+    --color-grid-text-4: #10281e;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
