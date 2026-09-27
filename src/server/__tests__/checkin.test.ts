@@ -67,7 +67,7 @@ test('manual Check-ins accept boundary durations and complete or past Tasks, and
     expect(snapshot.checkins[0]).not.toHaveProperty('day')
     const tasks = (await (await otherDevice('/api/sync/pull?after=0')).json()).changes
     expect(tasks.find((entry: { task: { id: string } }) => entry.task.id === completedTask).task.completed).toBe(true)
-    expect(database.pragma('user_version', { simple: true })).toBe(6)
+    expect(database.pragma('user_version', { simple: true })).toBe(7)
     expect(database.pragma('foreign_key_check')).toEqual([])
     const insert = database.prepare(`
       INSERT INTO session_checkin

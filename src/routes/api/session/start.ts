@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { defaultDurations } from '@/lib/settings-contract'
 import { startSessionSchema } from '@/lib/session-contract'
 import type { SessionRecord, StartSessionRequest } from '@/lib/session-contract'
+import { unauthorizedResponse } from '@/server/account'
 import { auth } from '@/server/auth'
 import { database } from '@/server/db'
 
@@ -54,7 +55,7 @@ export const Route = createFileRoute('/api/session/start')({
     handlers: {
       POST: async ({ request }) => {
         const login = await auth.api.getSession({ headers: request.headers })
-        if (!login) return Response.json({ error: 'Unauthorized' }, { status: 401, headers: noCache })
+        if (!login) return unauthorizedResponse(request)
         if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== login.user.id) {
           return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
         }

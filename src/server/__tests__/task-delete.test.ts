@@ -219,7 +219,7 @@ test('deletion receipts and tombstones remain private, and unauthenticated chang
     ])
     expect((await (await first('/api/sync/pull?after=0')).json()).changes.at(-1))
       .toEqual({ seq: deleted.seq, deletedTaskId: owned.task.id })
-    expect(database.pragma('user_version', { simple: true })).toBe(6)
+    expect(database.pragma('user_version', { simple: true })).toBe(7)
   } finally {
     await helpers.deleteUser(user.id)
     await helpers.deleteUser(outsider.id)

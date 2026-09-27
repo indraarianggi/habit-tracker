@@ -16,7 +16,15 @@ export function SignIn() {
   const { data: session, isPending } = authClient.useSession()
   const [error, setError] = useState('')
   const [pendingSignOut, setPendingSignOut] = useState<boolean | null>(null)
+  const [accountDeleted, setAccountDeleted] = useState<'here' | 'elsewhere' | null>(null)
   useEffect(() => { setPendingSignOut(localStorage.getItem('habit-tracker:signed-out') !== null) }, [])
+  useEffect(() => {
+    const value = localStorage.getItem('habit-tracker:account-deleted')
+    if (value === 'here' || value === 'elsewhere') {
+      setAccountDeleted(value)
+      localStorage.removeItem('habit-tracker:account-deleted')
+    }
+  }, [])
 
   useEffect(() => {
     if (pendingSignOut !== true) return
@@ -79,6 +87,9 @@ export function SignIn() {
       </Button>
       {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
       {pendingSignOut && <p role="status" className="mt-3 text-sm text-amber">Reconnect to finish signing out before signing in again.</p>}
+      {accountDeleted && <p role="status" className="mt-3 text-sm text-muted-foreground">
+        {accountDeleted === 'here' ? 'Your account and its data have been deleted.' : 'Your account was deleted on another device. This device has been signed out and its data removed.'}
+      </p>}
       <p className="mt-6 text-[.85rem] leading-[1.6] text-[#655f6b] max-[480px]:mt-4">
         Before signing in, read our <Link to="/privacy" className="text-mint-ink underline underline-offset-[.18em] focus-visible:rounded-sm focus-visible:outline-[3px] focus-visible:outline-offset-4 focus-visible:outline-ring">Privacy Policy</Link> to see what we store and how to request deletion.
       </p>

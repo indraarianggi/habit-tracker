@@ -27,7 +27,7 @@ export async function syncSession(store: SessionStore, userId: string, fetcher: 
         ...requestOptions, method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-User': userId },
         body: JSON.stringify({ ...change.change, today: localDay() }),
       })
-      if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+      if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
       if (response.status === 404) {
         const failure: unknown = await response.json().catch(() => null)
         const missingTask = !!failure && typeof failure === 'object' && 'error' in failure && failure.error === 'Task not found'
@@ -45,7 +45,7 @@ export async function syncSession(store: SessionStore, userId: string, fetcher: 
         if (change.change.action !== 'create') {
           if (missingTask && change.change.action === 'edit') {
             const authoritative = await fetcher('/api/session', { ...requestOptions, headers: { 'X-Local-User': userId } })
-            if (authoritative.status === 401 || authoritative.status === 403) throw new SyncAuthError(authoritative.status)
+            if (authoritative.status === 401 || authoritative.status === 403 || authoritative.status === 410) throw new SyncAuthError(authoritative.status)
             if (!authoritative.ok) throw new Error(`Could not load focus (${authoritative.status}).`)
             const body: unknown = await authoritative.json()
             if (!body || typeof body !== 'object' || !('checkins' in body) || !Array.isArray(body.checkins)) throw new Error('Invalid focus response.')
@@ -80,7 +80,7 @@ export async function syncSession(store: SessionStore, userId: string, fetcher: 
       await store.acceptChange(userId, change.id!)
       continue
     }
-    if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+    if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
     if (!response.ok) throw new Error(`Could not sync focus (${response.status}).`)
     const body: unknown = await response.json()
     if (!control) {
@@ -90,7 +90,7 @@ export async function syncSession(store: SessionStore, userId: string, fetcher: 
     await store.acceptChange(userId, change.id!)
   }
   const response = await fetcher('/api/session', { ...requestOptions, headers: { 'X-Local-User': userId } })
-  if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+  if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
   if (!response.ok) throw new Error(`Could not load focus (${response.status}).`)
   const body: unknown = await response.json()
   if (!body || typeof body !== 'object' || !('session' in body) || !('lastTaskId' in body) || !('checkins' in body) || !Array.isArray(body.checkins)) {

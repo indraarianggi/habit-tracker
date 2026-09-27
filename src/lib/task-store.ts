@@ -215,6 +215,18 @@ export class TaskStore {
     })
   }
 
+  async countAll(userId: string): Promise<number> {
+    return this.db.tasks.where('[userId+day]').between([userId, Dexie.minKey], [userId, Dexie.maxKey], true, true).count()
+  }
+
+  async wipeUser(userId: string): Promise<void> {
+    await this.db.transaction('rw', this.db.tasks, this.db.pending, this.db.cursors, async () => {
+      await this.db.tasks.where('[userId+day]').between([userId, Dexie.minKey], [userId, Dexie.maxKey], true, true).delete()
+      await this.db.pending.where('userId').equals(userId).delete()
+      await this.db.cursors.delete(userId)
+    })
+  }
+
   async syncState(userId: string): Promise<{ cursor: number; firstLoadComplete: boolean; pending: number }> {
     return this.db.transaction('r', this.db.pending, this.db.cursors, async () => {
       const [cursor, pending] = await Promise.all([

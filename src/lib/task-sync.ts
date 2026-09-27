@@ -31,7 +31,7 @@ export async function syncTasks(
       headers: { 'Content-Type': 'application/json', 'X-Local-User': userId },
       body: JSON.stringify(request),
     })
-    if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+    if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
     if (!response.ok) throw new Error(`Task push failed (${response.status}).`)
 
     const { results } = pushResponseSchema.parse(await response.json())
@@ -55,7 +55,7 @@ export async function syncTasks(
       cache: 'no-store',
       headers: { 'X-Local-User': userId },
     })
-    if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+    if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
     if (!response.ok) throw new Error(`Task pull failed (${response.status}).`)
 
     const page = pullResponseSchema.parse(await response.json())

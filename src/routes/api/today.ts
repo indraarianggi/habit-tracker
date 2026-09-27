@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { unauthorizedResponse } from '@/server/account'
 import { auth } from '@/server/auth'
 
 export const Route = createFileRoute('/api/today')({
@@ -6,7 +7,7 @@ export const Route = createFileRoute('/api/today')({
     handlers: {
       GET: async ({ request }) => {
         const session = await auth.api.getSession({ headers: request.headers })
-        if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+        if (!session) return unauthorizedResponse(request)
         return Response.json({
           user: {
             id: session.user.id,

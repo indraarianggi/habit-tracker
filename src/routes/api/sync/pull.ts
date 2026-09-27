@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import type { TaskRecord } from '@/lib/task-contract'
+import { unauthorizedResponse } from '@/server/account'
 import { auth } from '@/server/auth'
 import { database } from '@/server/db'
 
@@ -29,7 +30,7 @@ export const Route = createFileRoute('/api/sync/pull')({
     handlers: {
       GET: async ({ request }) => {
         const session = await auth.api.getSession({ headers: request.headers })
-        if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401, headers: noCache })
+        if (!session) return unauthorizedResponse(request)
         if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== session.user.id) {
           return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
         }

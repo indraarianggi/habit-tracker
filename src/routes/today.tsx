@@ -23,6 +23,7 @@ import { SyncAuthError, syncTasks } from '@/lib/task-sync'
 type TodayUser = { id: string; name: string; email: string; image: string | null }
 const cachedUserKey = 'habit-tracker:last-user'
 const signedOutKey = 'habit-tracker:signed-out'
+const accountDeletedKey = 'habit-tracker:account-deleted'
 
 
 function shiftDay(day: string, offset: number): string {
@@ -103,6 +104,11 @@ function Today() {
   const [pending, setPending] = useState(0)
   const [signOutPending, setSignOutPending] = useState<number | null>(null)
   const [signedOut, setSignedOut] = useState(false)
+  const [dangerZoneOpen, setDangerZoneOpen] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [accountDeleting, setAccountDeleting] = useState(false)
+  const [accountDeleteError, setAccountDeleteError] = useState('')
+  const [accountCounts, setAccountCounts] = useState<{ tasks: number; checkins: number } | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [titleError, setTitleError] = useState('')
@@ -122,6 +128,7 @@ function Today() {
   const retryTimer = useRef<number | undefined>(undefined)
   const failures = useRef(0)
   const userIdRef = useRef<string | null>(null)
+  const accountWiped = useRef(false)
   const storeActive = useRef(true)
   const activeScope = useRef<string | null>(null)
   const currentSync = useRef<(() => Promise<void>) | null>(null)
@@ -238,6 +245,22 @@ function Today() {
     setSyncNotices(current => [...current, { id: crypto.randomUUID(), message }])
   }, [])
 
+  const wipeAndRedirect = useCallback(async (reason: 'here' | 'elsewhere') => {
+    if (accountWiped.current) return
+    accountWiped.current = true
+    const uid = userIdRef.current
+    try {
+      if (uid) await Promise.all([store?.wipeUser(uid), focusStore?.wipeUser(uid), settingsStore?.wipeUser(uid)])
+    } finally {
+      try { await authClient.signOut() } catch { /* The session is already gone server-side; only the local cache needs clearing. */ }
+      localStorage.removeItem(cachedUserKey)
+      localStorage.removeItem(signedOutKey)
+      localStorage.setItem(accountDeletedKey, reason)
+      userIdRef.current = null
+      void navigate({ to: '/', replace: true })
+    }
+  }, [store, focusStore, settingsStore, navigate])
+
   const syncFocus = useCallback(async () => {
     if (!focusStore || !user || !navigator.onLine || authRequired) return
     if (syncingFocus.current) {
@@ -255,6 +278,7 @@ function Today() {
       setFocusLoaded(true)
       setFocusError('')
     } catch (reason) {
+      if (reason instanceof SyncAuthError && reason.status === 410) { void wipeAndRedirect('elsewhere'); return }
       if (userIdRef.current !== user.id) return
       if (reason instanceof SyncAuthError) {
         setAuthRequired(true)
@@ -269,7 +293,7 @@ function Today() {
         void currentFocusSync.current?.()
       }
     }
-  }, [focusStore, store, user, authRequired, reportSyncNotice])
+  }, [focusStore, store, user, authRequired, reportSyncNotice, wipeAndRedirect])
   useEffect(() => { currentFocusSync.current = syncFocus }, [syncFocus])
 
   useEffect(() => {
@@ -545,6 +569,7 @@ function Today() {
       failures.current = 0
       await refreshPending()
     } catch (reason) {
+      if (reason instanceof SyncAuthError && reason.status === 410) { void wipeAndRedirect('elsewhere'); return }
       if (!storeActive.current || userIdRef.current !== user.id) return
       const state = await store.syncState(user.id)
       if (!state.firstLoadComplete) setFirstLoadError(true)
@@ -568,7 +593,7 @@ function Today() {
         void currentSync.current?.()
       }
     }
-  }, [store, focusStore, settingsStore, user, authRequired, refreshPending, reportSyncNotice, loadSession])
+  }, [store, focusStore, settingsStore, user, authRequired, refreshPending, reportSyncNotice, loadSession, wipeAndRedirect])
 
   useEffect(() => { currentSync.current = sync }, [sync])
 
@@ -837,6 +862,39 @@ function Today() {
     else await completeSignOut()
   }
 
+  async function openDangerZone() {
+    if (!store || !user) return
+    setDangerZoneOpen(true)
+    setDeleteConfirmText('')
+    setAccountDeleteError('')
+    setAccountCounts(null)
+    try {
+      const tasks = await store.countAll(user.id)
+      setAccountCounts({ tasks, checkins: focus.checkins.length })
+    } catch {
+      setAccountDeleteError('Could not count your data on this device.')
+    }
+  }
+
+  async function deleteAccountNow() {
+    if (!user || deleteConfirmText !== 'DELETE' || accountDeleting) return
+    setAccountDeleteError('')
+    setAccountDeleting(true)
+    try {
+      const response = await fetch('/api/account', {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: 'DELETE' }),
+      })
+      if (!response.ok) throw new Error('Could not delete your account. Try again.')
+      setDangerZoneOpen(false)
+      await wipeAndRedirect('here')
+    } catch (reason) {
+      setAccountDeleteError(reason instanceof Error ? reason.message : 'Could not delete your account. Try again.')
+      setAccountDeleting(false)
+    }
+  }
+
   async function openStatus() {
     if (authRequired) {
       const result = await authClient.signIn.social({ provider: 'google', callbackURL: '/today' })
@@ -888,9 +946,35 @@ function Today() {
       onDuration={(key, minutes) => updateDurations(current => ({ ...current, [key]: minutes }))} onReset={async () => {
         try { await updateDurations(defaultDurations); setSessionError('') }
         catch { setSessionError('Could not reset timer settings on this device.') }
-      }} onPreferences={updatePreferences} onBack={() => setSettingsOpen(false)} onSignOut={() => void signOut()} />
+      }} onPreferences={updatePreferences} onBack={() => setSettingsOpen(false)} onSignOut={() => void signOut()} onOpenDangerZone={() => void openDangerZone()} />
     {sessionError && <p role="alert" className="px-5 text-xs text-destructive">{sessionError}</p>}
     {signOutPrompt}
+    {dangerZoneOpen && <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/35" onClick={() => setDangerZoneOpen(false)}>
+      <section role="dialog" aria-modal="true" aria-label="Delete account and data" onClick={event => event.stopPropagation()} className="flex max-h-[90svh] w-full max-w-[414px] flex-col gap-4 overflow-y-auto rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">
+        <div className="mx-auto h-1 w-9 rounded-full bg-border" />
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-display text-lg font-extrabold text-destructive">Delete account and data</h2>
+          <button type="button" aria-label="Close delete account" onClick={() => setDangerZoneOpen(false)} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground"><X size={19} aria-hidden="true" /></button>
+        </div>
+        <div className="flex flex-col gap-2 rounded-2xl border border-destructive bg-destructive-surface p-3.5">
+          <p className="text-sm font-bold text-destructive">This cannot be undone.</p>
+          <p className="text-xs leading-relaxed text-destructive">
+            {accountCounts === null ? 'Counting your Tasks and Check-ins…'
+              : `Permanently deletes your account, ${accountCounts.tasks} ${accountCounts.tasks === 1 ? 'Task' : 'Tasks'}, and ${accountCounts.checkins} ${accountCounts.checkins === 1 ? 'Check-in' : 'Check-ins'} across all devices. A secure copy stays in backups for up to 30 days before full erasure.`}
+          </p>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="delete-confirm" className="text-[13px] font-bold">To confirm, type DELETE in all caps:</label>
+          <input id="delete-confirm" aria-label="Type DELETE to confirm" autoComplete="off" value={deleteConfirmText} onChange={event => { setDeleteConfirmText(event.target.value); setAccountDeleteError('') }} className="h-11 rounded-xl border border-destructive bg-surface-subtle px-3 text-sm tracking-wider outline-none focus:ring-2 focus:ring-destructive/30" />
+        </div>
+        {!connected && <p role="status" className="text-xs font-semibold text-amber">Connect to the internet to delete your account.</p>}
+        {accountDeleteError && <p role="alert" className="text-xs text-destructive">{accountDeleteError}</p>}
+        <div className="flex flex-col gap-2.5">
+          <Button type="button" variant="destructive" disabled={deleteConfirmText !== 'DELETE' || !connected || accountDeleting} onClick={() => void deleteAccountNow()} className="min-h-11 rounded-2xl font-bold"><Trash2 size={16} aria-hidden="true" />Delete my account and data</Button>
+          <button type="button" onClick={() => setDangerZoneOpen(false)} className="min-h-11 rounded-xl text-sm font-semibold text-muted-foreground">Keep my account</button>
+        </div>
+      </section>
+    </div>}
   </main>
   if (!user || !ready) {
     return (

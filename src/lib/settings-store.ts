@@ -65,6 +65,13 @@ export class SettingsStore {
     })
   }
 
+  async wipeUser(userId: string): Promise<void> {
+    await this.db.transaction('rw', this.db.settings, this.db.pending, async () => {
+      await this.db.settings.delete(userId)
+      await this.db.pending.where('userId').equals(userId).delete()
+    })
+  }
+
   close(): void {
     this.db.close()
   }
@@ -93,7 +100,7 @@ export function syncSettings(store: SettingsStore, userId: string, fetcher: type
         headers: { 'Content-Type': 'application/json', 'X-Local-User': userId },
         body: JSON.stringify({ id: change.id, settings: change.settings }),
       })
-      if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+      if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
       if (!response.ok) throw new Error(`Settings push failed (${response.status}).`)
       const receipt = parseReceipt(await response.json())
       await store.accept(userId, change.id, receipt.settings, receipt.seq)
@@ -101,7 +108,7 @@ export function syncSettings(store: SettingsStore, userId: string, fetcher: type
     const response = await fetcher('/api/settings', {
       credentials: 'same-origin', cache: 'no-store', headers: { 'X-Local-User': userId },
     })
-    if (response.status === 401 || response.status === 403) throw new SyncAuthError(response.status)
+    if (response.status === 401 || response.status === 403 || response.status === 410) throw new SyncAuthError(response.status)
     if (!response.ok) throw new Error(`Settings pull failed (${response.status}).`)
     const remote = parseReceipt(await response.json())
     await store.receive(userId, remote.settings, remote.seq)

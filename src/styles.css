@@ -26,6 +26,7 @@
   --color-accent: #e2f5eb;
   --color-accent-foreground: #236948;
   --color-destructive: #e53e3e;
+  --color-destructive-surface: #fde8e8;
   --color-border: #e9e5dc;
   --color-input: #e9e5dc;
   --color-ring: #2da46f;
@@ -58,6 +59,7 @@
     --color-accent: #214335;
     --color-accent-foreground: #bce8cc;
     --color-destructive: #ff8c86;
+    --color-destructive-surface: #3a2225;
     --color-border: #3d4943;
     --color-input: #3d4943;
     --color-ring: #81d2a2;

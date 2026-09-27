@@ -307,5 +307,13 @@ export class SessionStore {
     })
   }
 
+  async wipeUser(userId: string): Promise<void> {
+    await this.db.transaction('rw', this.db.state, this.db.checkins, this.db.pending, async () => {
+      await this.db.state.delete(userId)
+      await this.db.checkins.where('[userId+id]').between([userId, Dexie.minKey], [userId, Dexie.maxKey]).delete()
+      await this.db.pending.where('userId').equals(userId).delete()
+    })
+  }
+
   close(): void { this.db.close() }
 }

@@ -111,7 +111,7 @@ database.pragma('journal_mode = WAL')
 database.pragma('foreign_keys = ON')
 
 const version = database.pragma('user_version', { simple: true }) as number
-if (version > 6) throw new Error(`Unsupported SQLite schema version ${version}`)
+if (version > 7) throw new Error(`Unsupported SQLite schema version ${version}`)
 
 if (version < 4) {
   database.transaction(() => {
@@ -190,3 +190,17 @@ export function migrateSettingsSchema(target: Database.Database): void {
 }
 
 if (version < 6) migrateSettingsSchema(database)
+
+export function migrateAccountSchema(target: Database.Database): void {
+  target.transaction(() => {
+    target.exec(`
+      CREATE TABLE deleted_account (
+        userId text not null primary key,
+        deletedAt text not null
+      );
+    `)
+    target.pragma('user_version = 7')
+  }).immediate()
+}
+
+if (version < 7) migrateAccountSchema(database)

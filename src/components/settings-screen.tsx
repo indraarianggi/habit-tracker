@@ -69,7 +69,7 @@ function DeviceSwitch({ label, description, checked, disabled, onChange }: {
   </div>
 }
 
-export function SettingsScreen({ user, durations, preferences, wakeSupported, onDuration, onReset, onPreferences, onBack, onSignOut }: {
+export function SettingsScreen({ user, durations, preferences, wakeSupported, onDuration, onReset, onPreferences, onBack, onSignOut, onOpenDangerZone }: {
   user: { name: string; email: string; image: string | null }
   durations: DurationSettings
   preferences: DevicePreferences
@@ -79,6 +79,7 @@ export function SettingsScreen({ user, durations, preferences, wakeSupported, on
   onPreferences: (preferences: DevicePreferences) => void
   onBack: () => void
   onSignOut: () => void
+  onOpenDangerZone: () => void
 }) {
   return <>
     <header className="flex min-h-16 items-center gap-2 px-4 pt-[env(safe-area-inset-top)]">
@@ -127,6 +128,15 @@ export function SettingsScreen({ user, durations, preferences, wakeSupported, on
       <section aria-labelledby="app-heading">
         <h2 id="app-heading" className="mb-2 px-1 text-[11px] font-extrabold tracking-[.12em] text-muted-foreground uppercase">App</h2>
         <div className="rounded-[22px] border border-border bg-card px-4"><Link to="/privacy" className="flex min-h-14 items-center justify-between text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-mint">Privacy policy<ChevronRight size={17} className="text-muted-foreground" aria-hidden="true" /></Link></div>
+      </section>
+      <section aria-labelledby="danger-zone-heading">
+        <div className="flex flex-col gap-2.5 rounded-[22px] border border-destructive bg-destructive-surface p-4">
+          <h2 id="danger-zone-heading" className="text-[13px] font-extrabold text-destructive">Danger Zone</h2>
+          <button type="button" onClick={onOpenDangerZone} className="flex min-h-8 w-full items-center justify-between rounded-lg text-[13px] font-bold text-destructive focus-visible:outline-2 focus-visible:outline-destructive">
+            Delete account and data
+            <ChevronRight size={16} aria-hidden="true" />
+          </button>
+        </div>
       </section>
     </div>
   </>
