@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import appStyles from '@/styles.css?url'
 import { DEVICE_PREFERENCES_KEY, readDevicePreferences } from '@/lib/device-preferences'
+import { initPwa } from '@/lib/pwa'
 
 export const Route = createRootRoute({
   head: () => ({
@@ -11,8 +12,16 @@ export const Route = createRootRoute({
       { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
       { title: 'Habit Tracker' },
       { name: 'theme-color', content: '#f8f6f1' },
+      { name: 'apple-mobile-web-app-title', content: 'Habit Tracker' },
+      { name: 'apple-mobile-web-app-capable', content: 'yes' },
+      { name: 'mobile-web-app-capable', content: 'yes' },
     ],
-    links: [{ rel: 'stylesheet', href: appStyles }],
+    links: [
+      { rel: 'stylesheet', href: appStyles },
+      { rel: 'manifest', href: '/manifest.webmanifest' },
+      { rel: 'icon', href: '/icons/favicon-32.png', sizes: '32x32' },
+      { rel: 'apple-touch-icon', href: '/icons/apple-touch-icon.png' },
+    ],
   }),
   component: AppDocument,
 })
@@ -39,6 +48,7 @@ function Document({ children }: { children: ReactNode }) {
     window.addEventListener('storage', onStorage)
     window.addEventListener('habit-tracker:device-preferences', apply)
     apply()
+    initPwa()
     return () => {
       media.removeEventListener('change', apply)
       window.removeEventListener('storage', onStorage)

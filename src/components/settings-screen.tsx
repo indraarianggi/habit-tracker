@@ -69,11 +69,13 @@ function DeviceSwitch({ label, description, checked, disabled, onChange }: {
   </div>
 }
 
-export function SettingsScreen({ user, durations, preferences, wakeSupported, onDuration, onReset, onPreferences, onBack, onSignOut, onOpenDangerZone }: {
+export function SettingsScreen({ user, durations, preferences, wakeSupported, installEligible, onInstall, onDuration, onReset, onPreferences, onBack, onSignOut, onOpenDangerZone }: {
   user: { name: string; email: string; image: string | null }
   durations: DurationSettings
   preferences: DevicePreferences
   wakeSupported: boolean
+  installEligible: boolean
+  onInstall: () => void
   onDuration: (key: DurationKey, minutes: number) => Promise<void>
   onReset: () => Promise<void>
   onPreferences: (preferences: DevicePreferences) => void
@@ -127,7 +129,10 @@ export function SettingsScreen({ user, durations, preferences, wakeSupported, on
       </section>
       <section aria-labelledby="app-heading">
         <h2 id="app-heading" className="mb-2 px-1 text-[11px] font-extrabold tracking-[.12em] text-muted-foreground uppercase">App</h2>
-        <div className="rounded-[22px] border border-border bg-card px-4"><Link to="/privacy" className="flex min-h-14 items-center justify-between text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-mint">Privacy policy<ChevronRight size={17} className="text-muted-foreground" aria-hidden="true" /></Link></div>
+        <div className="rounded-[22px] border border-border bg-card px-4">
+          {installEligible && <button type="button" onClick={onInstall} className="flex min-h-14 w-full items-center justify-between border-b border-border text-[13px] font-bold last:border-0 focus-visible:outline-2 focus-visible:outline-mint">Install app<ChevronRight size={17} className="text-muted-foreground" aria-hidden="true" /></button>}
+          <Link to="/privacy" className="flex min-h-14 items-center justify-between text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-mint">Privacy policy<ChevronRight size={17} className="text-muted-foreground" aria-hidden="true" /></Link>
+        </div>
       </section>
       <section aria-labelledby="danger-zone-heading">
         <div className="flex flex-col gap-2.5 rounded-[22px] border border-destructive bg-destructive-surface p-4">

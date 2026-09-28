@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { liveQuery } from 'dexie'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, EllipsisVertical, Flame, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, SquareCheck, Timer, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Download, EllipsisVertical, Flame, LayoutGrid, Pause, Pencil, Play, Plus, RefreshCw, Share, SquareCheck, Timer, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { authClient } from '@/auth-client'
 import { SignIn } from '@/components/sign-in'
@@ -19,6 +19,7 @@ import { defaultDurations, type DurationSettings } from '@/lib/settings-contract
 import { SettingsStore, syncSettings } from '@/lib/settings-store'
 import { TaskStore } from '@/lib/task-store'
 import { SyncAuthError, syncTasks } from '@/lib/task-sync'
+import { applyUpdate, dismissInstallCard, getPwaSnapshot, promptInstall, requestPersistentStorage, subscribePwa, type PwaSnapshot } from '@/lib/pwa'
 
 type TodayUser = { id: string; name: string; email: string; image: string | null }
 const cachedUserKey = 'habit-tracker:last-user'
@@ -110,6 +111,8 @@ function Today() {
   const [accountDeleteError, setAccountDeleteError] = useState('')
   const [accountCounts, setAccountCounts] = useState<{ tasks: number; checkins: number } | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
+  const [pwa, setPwa] = useState<PwaSnapshot>(getPwaSnapshot)
+  const [iosInstallOpen, setIosInstallOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [titleError, setTitleError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -161,6 +164,9 @@ function Today() {
   const editingCheckin = checkinEditor?.mode === 'edit' ? focus.checkins.find(checkin => checkin.id === checkinEditor.id) : null
   const selectedCheckinTask = eligibleTasks.find(task => task.id === checkinTaskId)
   const allTimeProgress = useMemo(() => buildProgress(eligibleTasks, focus.checkins, day, 3), [eligibleTasks, focus.checkins, day])
+  const hasCheckin = focus.checkins.length > 0
+  const installEligible = !pwa.installed && pwa.installPlatform !== null
+  const showInstallCard = hasCheckin && installEligible && !pwa.installCardDismissed
 
   useEffect(() => {
     const instance = new TaskStore()
@@ -198,6 +204,9 @@ function Today() {
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }, [])
+
+  useEffect(() => subscribePwa(() => setPwa(getPwaSnapshot())), [])
+  useEffect(() => { if (hasCheckin) void requestPersistentStorage() }, [hasCheckin])
 
   useEffect(() => {
     setWakeSupported(typeof navigator.wakeLock?.request === 'function')
@@ -943,12 +952,23 @@ function Today() {
   if (signedOut) return <SignIn />
   if (settingsOpen && user) return <main className="mx-auto flex min-h-svh w-full max-w-[414px] flex-col">
     <SettingsScreen user={user} durations={durations} preferences={preferences} wakeSupported={wakeSupported}
+      installEligible={installEligible}
+      onInstall={() => { if (pwa.installPlatform === 'ios') setIosInstallOpen(true); else void promptInstall() }}
       onDuration={(key, minutes) => updateDurations(current => ({ ...current, [key]: minutes }))} onReset={async () => {
         try { await updateDurations(defaultDurations); setSessionError('') }
         catch { setSessionError('Could not reset timer settings on this device.') }
       }} onPreferences={updatePreferences} onBack={() => setSettingsOpen(false)} onSignOut={() => void signOut()} onOpenDangerZone={() => void openDangerZone()} />
     {sessionError && <p role="alert" className="px-5 text-xs text-destructive">{sessionError}</p>}
     {signOutPrompt}
+    {iosInstallOpen && <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/35" onClick={() => setIosInstallOpen(false)}>
+      <section role="dialog" aria-modal="true" aria-label="Install Habit Tracker" onClick={event => event.stopPropagation()} className="w-full max-w-[414px] rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-5 shadow-xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-lg font-bold">Install Habit Tracker</h2>
+          <button type="button" aria-label="Close install instructions" onClick={() => setIosInstallOpen(false)} className="grid size-10 place-items-center rounded-xl text-muted-foreground"><X size={18} aria-hidden="true" /></button>
+        </div>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Tap <Share size={14} className="inline" aria-hidden="true" /> Share, then "Add to Home Screen". Installing keeps your focus history from being cleared and lets you open Habit Tracker offline.</p>
+      </section>
+    </div>}
     {dangerZoneOpen && <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/35" onClick={() => setDangerZoneOpen(false)}>
       <section role="dialog" aria-modal="true" aria-label="Delete account and data" onClick={event => event.stopPropagation()} className="flex max-h-[90svh] w-full max-w-[414px] flex-col gap-4 overflow-y-auto rounded-t-[28px] bg-card px-5 pb-[max(32px,env(safe-area-inset-bottom))] pt-4 shadow-xl">
         <div className="mx-auto h-1 w-9 rounded-full bg-border" />
@@ -1019,6 +1039,10 @@ function Today() {
       </div>}
       {signOutPrompt}
       {sessionError && <p role="alert" className="px-5 text-sm text-destructive">{sessionError}</p>}
+      {pwa.updateAvailable && <div role="alert" aria-label="New version available" className="mx-5 mb-2 flex items-center justify-between gap-3 rounded-2xl border border-sky bg-sky-surface px-4 py-3 text-sm font-semibold text-sky">
+        <span>New version available</span>
+        <Button type="button" disabled={!!activeFocus} onClick={() => applyUpdate()} className="min-h-9 shrink-0 rounded-xl bg-sky px-3 text-xs font-bold text-white disabled:opacity-60">{activeFocus ? 'Update after your session' : 'Reload'}</Button>
+      </div>}
       {syncNotices.map(notice => <div key={notice.id} role="alert" aria-label="Sync conflict" className="sticky top-0 z-10 mx-5 mb-2 flex items-start justify-between gap-3 rounded-2xl border border-amber bg-amber-surface px-4 py-3 text-sm leading-relaxed text-foreground">
         <p className="min-w-0 break-words">{notice.message}</p>
         <button type="button" aria-label="Dismiss sync notice" onClick={() => setSyncNotices(current => current.filter(item => item.id !== notice.id))} className="grid size-11 shrink-0 place-items-center rounded-xl text-amber focus-visible:outline-2 focus-visible:outline-amber"><X size={18} aria-hidden="true" /></button>
@@ -1099,6 +1123,17 @@ function Today() {
             </button>
           })}
         </section>}
+        {showInstallCard && <div role="region" aria-label="Install Habit Tracker" className="flex items-start gap-3 rounded-2xl border border-mint bg-mint-surface px-4 py-3 text-mint-ink">
+          <Download size={20} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold">Install Habit Tracker</p>
+            {pwa.installPlatform === 'ios'
+              ? <p className="mt-1 text-xs leading-relaxed">Tap <Share size={12} className="inline" aria-hidden="true" /> Share, then "Add to Home Screen" — it keeps your focus history from being cleared and works offline.</p>
+              : <p className="mt-1 text-xs leading-relaxed">Add it to your home screen for quick, offline access.</p>}
+            {pwa.installPlatform === 'chrome' && <Button type="button" onClick={() => void promptInstall()} className="mt-2 min-h-9 rounded-xl bg-mint px-3 text-xs font-bold text-white">Install app</Button>}
+          </div>
+          <button type="button" aria-label="Dismiss install prompt" onClick={dismissInstallCard} className="grid size-9 shrink-0 place-items-center rounded-lg text-mint-ink focus-visible:outline-2 focus-visible:outline-mint"><X size={16} aria-hidden="true" /></button>
+        </div>}
         {focusError && <p role="alert" className="text-xs text-destructive">{focusError}</p>}
         <section aria-labelledby="today-focus-heading">
           <Card className="gap-2.5 rounded-[22px] p-4 shadow-none">
