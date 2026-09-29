@@ -4,7 +4,7 @@
 
 **Blocked by:** 03: Create a Task locally and sync it; 11: Converge conflicting devices and explain losses.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The header hides status when synced; otherwise it shows “Offline”, “N changes waiting”, “Can't sync” only after three consecutive online failures, or “Sign in to sync”, with a plain-language status sheet and “Sync now”.
 - [x] Failed sync attempts back off from seconds to no more than five minutes; network reconnect, returning to the app, and “Sync now” retry immediately, and Start becomes available automatically when online.
