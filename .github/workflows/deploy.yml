@@ -1,0 +1,161 @@
+name: Test and deploy
+
+# Gate releases on the full test suite, then build an image and deploy it
+# through fairy-vearth's Cloudflare Tunnel path (ticket 20,
+# docs/deployment-home-server.md §14.7). Runs on every push/PR so a failing
+# core or browser journey blocks the PR; only a push to main that passes
+# goes on to build and deploy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  APP_URL: https://habits.indraarianggi.xyz
+  HEALTH_PATH: /api/health
+  DEPLOY_HOST: ssh.indraarianggi.xyz
+  CLOUDFLARED_VERSION: '2026.10.2'
+
+jobs:
+  # Both test seams (src/lib + src/server "headless" tests against fake
+  # time/in-memory stores, and the src/routes browser journeys) run through
+  # the same `pnpm run smoke:browser` — see docs/agents/testing.md. Run it
+  # against both server modes, same as ticket 17/18's manual verification:
+  # dev mode exercises the unbundled dev shell, SMOKE_SERVER=production
+  # exercises the real built server (PWA precache/offline paths only work
+  # meaningfully there).
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Build-time-only placeholders — never read at runtime (the running
+      # container reads real values from the server's .env), same values
+      # the Dockerfile's build stage uses.
+      VITE_PRIVACY_CONTACT_EMAIL: build@invalid.test
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      BETTER_AUTH_SECRET: ci-build-placeholder-not-a-real-secret-32c
+      GOOGLE_CLIENT_ID: ci-build-placeholder
+      GOOGLE_CLIENT_SECRET: ci-build-placeholder
+      DATABASE_PATH: .data/ci-build.sqlite
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Generates src/routeTree.gen.ts, which typecheck needs
+      # (docs/agents/code-conventions.md) and which SMOKE_SERVER=production
+      # below needs as a built .output/.
+      - run: pnpm run build
+
+      - run: pnpm run typecheck
+
+      - name: Install Playwright's Chromium (the only browser playwright.config.ts uses)
+        run: npx playwright install --with-deps chromium
+
+      - name: Core + browser journeys (dev server)
+        run: pnpm run smoke:browser
+
+      - name: Core + browser journeys (production server)
+        run: pnpm run smoke:browser
+        env:
+          SMOKE_SERVER: production
+
+  build:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VITE_PRIVACY_CONTACT_EMAIL=${{ vars.VITE_PRIVACY_CONTACT_EMAIL }}
+          tags: |
+            ${{ env.IMAGE }}:main
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Install cloudflared
+        run: |
+          set -eu
+          curl -fsSL --retry 3 -o /tmp/cloudflared \
+            "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64"
+          sudo install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Configure SSH through Cloudflare Access
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          cat > "$HOME/.ssh/config" <<EOF
+          Host deploy-target
+            HostName $DEPLOY_HOST
+            User deploy
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ProxyCommand cloudflared access ssh --hostname %h
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+
+      # Any command is ignored; the forced command on the server (redeploy
+      # habit-tracker) is what actually runs — docs/deployment-home-server.md
+      # §7.6. That script's `docker compose up -d --wait` gates on the web
+      # service's healthcheck, so a broken migration or a bad image fails
+      # this step rather than silently leaving the old version running.
+      - name: Redeploy
+        env:
+          TUNNEL_SERVICE_TOKEN_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          TUNNEL_SERVICE_TOKEN_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: ssh deploy-target redeploy
+
+      - name: Verify the live app
+        run: |
+          set -eu
+          for _ in $(seq 1 10); do
+            curl -fsS -o /dev/null "$APP_URL$HEALTH_PATH" && exit 0
+            sleep 5
+          done
+          echo "$APP_URL$HEALTH_PATH did not return 2xx"
+          exit 1
