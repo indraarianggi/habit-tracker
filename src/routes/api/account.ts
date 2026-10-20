@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { deleteAccountRequestSchema } from '@/lib/account-contract'
 import { deleteAccount, unauthorizedResponse } from '@/server/account'
 import { auth } from '@/server/auth'
+import { enforceIpLimit, enforceUserLimit } from '@/server/rate-limit'
 
 const noCache = { 'Cache-Control': 'private, no-store' }
 
@@ -9,8 +10,12 @@ export const Route = createFileRoute('/api/account')({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        const ipLimited = enforceIpLimit(request)
+        if (ipLimited) return ipLimited
         const login = await auth.api.getSession({ headers: request.headers })
         if (!login) return unauthorizedResponse(request)
+        const userLimited = enforceUserLimit(login.user.id)
+        if (userLimited) return userLimited
         if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== login.user.id) {
           return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
         }

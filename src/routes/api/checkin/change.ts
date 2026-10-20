@@ -4,6 +4,7 @@ import type { CheckinChangeRequest, CheckinRecord } from '@/lib/session-contract
 import { unauthorizedResponse } from '@/server/account'
 import { auth } from '@/server/auth'
 import { database } from '@/server/db'
+import { enforceIpLimit, enforceUserLimit } from '@/server/rate-limit'
 
 const noCache = { 'Cache-Control': 'private, no-store' }
 type ChangeResult = { checkin: CheckinRecord | null } | { error: string; status: number }
@@ -77,8 +78,12 @@ export const Route = createFileRoute('/api/checkin/change')({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        const ipLimited = enforceIpLimit(request)
+        if (ipLimited) return ipLimited
         const login = await auth.api.getSession({ headers: request.headers })
         if (!login) return unauthorizedResponse(request)
+        const userLimited = enforceUserLimit(login.user.id)
+        if (userLimited) return userLimited
         if (request.headers.get('X-Local-User') && request.headers.get('X-Local-User') !== login.user.id) {
           return Response.json({ error: 'Account switched' }, { status: 403, headers: noCache })
         }

@@ -1,0 +1,10 @@
+.git
+.output
+.data
+node_modules
+test-results
+playwright-report
+.env.local
+.scratch
+docs
+*.md
