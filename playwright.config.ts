@@ -16,6 +16,11 @@ export default defineConfig({
   testMatch: '**/__tests__/*.test.ts',
   // The smoke workers and web server share one SQLite test database; serialize fixtures and writes.
   workers: 1,
+  // CI-only: a genuine failure still fails (it fails identically on every
+  // retry); this only rescues the rare one-off browser crash/hang on a
+  // shared CI runner — ticket 20's first real pipeline run hit exactly that
+  // (a Chromium context died mid-test, not an assertion failure).
+  retries: process.env.CI ? 2 : 0,
   use: { baseURL, browserName: 'chromium' },
   webServer: {
     command: process.env.SMOKE_SERVER === 'production'
