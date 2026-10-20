@@ -1,0 +1,33 @@
+# Litestream sidecar config (ticket 19, docs/adr/0002-single-node-homelab-sqlite-litestream.md).
+#
+# Deployed to /opt/stack/apps/habit-tracker/litestream.yml on the server and
+# bind-mounted read-only into the litestream container (see
+# docs/replication-and-restore.md). ${VAR} values are expanded by litestream
+# itself from the same process environment the sidecar's env_file provides —
+# never edit this file per-value; edit .env instead.
+#
+# litestream/litestream:0.5.17 — exact version pinned to match this repo's
+# exact-pinned-dependency convention (docs/agents/code-conventions.md).
+
+endpoint: ${LITESTREAM_ENDPOINT}
+region: ${LITESTREAM_REGION}
+access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+
+retention:
+  enabled: true
+
+snapshot:
+  interval: 24h
+  # 720h = 30 days. Matches the User-facing "a secure copy stays in backups
+  # for up to 30 days" warning (src/routes/today.tsx, src/routes/privacy.tsx)
+  # — deleting an account must not make rows disappear from this replica
+  # before that window passes.
+  retention: 720h
+
+dbs:
+  - path: /app/.data/habit-tracker.sqlite
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: habit-tracker
