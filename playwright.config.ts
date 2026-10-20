@@ -21,14 +21,20 @@ export default defineConfig({
   // shared CI runner — ticket 20's first real pipeline run hit exactly that
   // (a Chromium context died mid-test, not an assertion failure).
   retries: process.env.CI ? 2 : 0,
-  // CI-only: the 3 heaviest tests (breaks.test.ts x2, focus.test.ts — long
-  // chains of fake-clock jumps plus real UI transitions) consistently missed
-  // the 5000ms default on GitHub's shared runner, identically across every
-  // retry, while passing clean locally — a timing-margin problem from a
-  // slower CPU, not a logic bug. A genuinely broken assertion still fails,
-  // just after 10s instead of 5s.
+  // CI-only, kept generous regardless of what's causing the failure below.
   expect: { timeout: process.env.CI ? 10_000 : 5_000 },
-  use: { baseURL, browserName: 'chromium' },
+  // 3 specific tests (breaks.test.ts x2, focus.test.ts) fail identically on
+  // every CI run and every retry — not fixed by the timeout above, so it's
+  // not a timing-margin issue — while passing clean locally every time.
+  // Cause not yet identified; capture real evidence instead of guessing
+  // further. `retain-on-failure` covers the original attempt too, not just
+  // retries.
+  use: {
+    baseURL,
+    browserName: 'chromium',
+    trace: process.env.CI ? 'retain-on-failure' : 'off',
+    screenshot: process.env.CI ? 'only-on-failure' : 'off',
+  },
   webServer: {
     command: process.env.SMOKE_SERVER === 'production'
       ? 'pnpm run start'

@@ -72,6 +72,18 @@ jobs:
       - name: Core + browser journeys (dev server)
         run: pnpm run smoke:browser
 
+      # Diagnostic only: this repo has no CI test history yet, so on a
+      # failure there's nothing to inspect beyond the locator-timeout
+      # message. Captures Playwright's trace/screenshot/error-context so a
+      # real failure can actually be debugged instead of guessed at.
+      - name: Upload Playwright artifacts (dev server)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-dev
+          path: test-results/
+          retention-days: 7
+
       - name: Core + browser journeys (production server)
         run: pnpm run smoke:browser
         env:
