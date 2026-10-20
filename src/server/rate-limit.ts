@@ -29,8 +29,24 @@ function hit(key: string, limit: number, windowMs: number): { allowed: true } | 
 }
 
 export function getTrustedClientIp(request: Request): string {
+  // Preferred: a single-value header only the proxy sets, with no parsing
+  // ambiguity. The per-project Caddy site block should set this explicitly
+  // (`header_up X-Real-IP {http.request.remote.host}`) rather than relying
+  // on Caddy's default X-Forwarded-For append behavior — see ticket 18.
+  const explicit = request.headers.get('x-real-ip')
+  if (explicit) return explicit.trim()
+
+  // Fallback for as long as that header isn't configured: the last hop of
+  // X-Forwarded-For, which only a well-behaved proxy appends to (never
+  // replaces). Weaker than X-Real-IP because it trusts that append-only
+  // behavior rather than an explicit, single-purpose header.
   const header = request.headers.get('x-forwarded-for')
-  if (!header) return 'unknown'
+  if (!header) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('rate-limit: request has neither X-Real-IP nor X-Forwarded-For — is this process reachable directly, bypassing Caddy?')
+    }
+    return 'unknown'
+  }
   const hops = header.split(',').map(hop => hop.trim()).filter(Boolean)
   return hops.at(-1) ?? 'unknown'
 }
@@ -49,8 +65,15 @@ export const SIGN_IN_LIMIT = { limit: 100, windowMs: 60_000 }
 const API_IP_LIMIT = { limit: 50_000, windowMs: 60_000 }
 const API_USER_LIMIT = { limit: 20_000, windowMs: 60_000 }
 
-/** Stricter limit for the public, pre-account `/api/auth/*` surface. */
+/**
+ * Stricter limit for the public, pre-account sign-in/callback surface only —
+ * not the whole `/api/auth/*` catch-all, so routine `get-session`/`sign-out`
+ * reads from an already-signed-in client (cheap, cookie-gated) aren't held
+ * to the same tight bound as the actual credential-issuing endpoints.
+ */
 export function enforceSignInLimit(request: Request): Response | null {
+  const { pathname } = new URL(request.url)
+  if (!pathname.includes('/sign-in') && !pathname.includes('/callback')) return null
   const result = hit(`sign-in:${getTrustedClientIp(request)}`, SIGN_IN_LIMIT.limit, SIGN_IN_LIMIT.windowMs)
   return result.allowed ? null : rateLimitResponse(result.retryAfterSeconds)
 }
