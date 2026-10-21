@@ -40,6 +40,12 @@ function hit(key: string, limit: number, windowMs: number): { allowed: true } | 
   return { allowed: true }
 }
 
+// Logged once, not per-request: a reverse-proxy misconfiguration is a
+// standing condition an operator needs to notice once, not a flood on every
+// single request — which in the SMOKE_SERVER=production test harness (no
+// real Caddy in front) is every request, drowning out everything else.
+let warnedMissingXForwardedFor = false
+
 export function getTrustedClientIp(request: Request): string {
   // X-Real-IP is only trusted once TRUST_X_REAL_IP is turned on in the
   // server's own .env — which the operator does only after deploying the
@@ -57,7 +63,8 @@ export function getTrustedClientIp(request: Request): string {
   // trusts that append-only convention rather than an explicit header.
   const header = request.headers.get('x-forwarded-for')
   if (!header) {
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' && !warnedMissingXForwardedFor) {
+      warnedMissingXForwardedFor = true
       console.error('rate-limit: request has no X-Forwarded-For header — is this process reachable directly, bypassing Caddy?')
     }
     return 'unknown'
