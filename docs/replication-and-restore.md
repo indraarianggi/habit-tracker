@@ -208,4 +208,4 @@ for the reminder itself).
 
 | Date | Outcome | Notes |
 |---|---|---|
-| _(pre-launch drill not yet run — needs the operator steps in §1 and a first deploy, ticket 20)_ | | |
+| 2026-10-21 | Pass | Pre-launch drill, against the operator's own real account (first live User). `litestream restore` from R2 → `/tmp/drill-restore.sqlite`, `restore-smoke-check.sh` confirmed Tasks/Check-ins/settings match source exactly. Staleness signal verified both ways: with Litestream healthy, `LITESTREAM_MAX_AGE_SECONDS=0` correctly reported the replica as stale and withheld the heartbeat ping (exit 1); the normal heartbeat run separately confirmed a fresh replica pings cleanly (exit 0). Next quarterly repeat: ~2027-01-21. |
